@@ -78,12 +78,12 @@ init(Q = #amqqueue{arguments = Args}, Recover, AsyncCallback) ->
 
 
 terminate(Reason, State = #state{bq = BQ}) ->
-    fold1(fun (BQSn) -> BQ:terminate(Reason, BQSn) end, State);
+    fold1(fun (_P, BQSn) -> BQ:terminate(Reason, BQSn) end, State);
 terminate(Reason, State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(terminate(Reason, BQS)).
 
 %% delete_and_terminate(Reason, State = #state{bq = BQ}) ->
-%%     fold1(fun (BQSn) -> BQ:delete_and_terminate(Reason, BQSn) end, State);
+%%     fold1(fun (_P, BQSn) -> BQ:delete_and_terminate(Reason, BQSn) end, State);
 delete_and_terminate(Reason, State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(delete_and_terminate(Reason, BQS)).
 
@@ -94,13 +94,19 @@ purge_acks(State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(purge_acks(BQS)).
 
 publish(Msg, MsgProps, IsDelivered, ChPid, State = #state{bq = BQ}) ->
-    pick1(fun (BQSn) ->
+    pick1(fun (_P, BQSn) ->
                   BQ:publish(Msg, MsgProps, IsDelivered, ChPid, BQSn)
           end, Msg, State);
 publish(Msg, MsgProps, IsDelivered, ChPid,
         State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(publish(Msg, MsgProps, IsDelivered, ChPid, BQS)).
 
+publish_delivered(Msg, MsgProps, ChPid, State = #state{bq = BQ}) ->
+    pick2(fun (P, BQSn) ->
+                  {AckTag, BQSn1} = BQ:publish_delivered(
+                                      Msg, MsgProps, ChPid, BQSn),
+                  {{P, AckTag}, BQSn1}
+          end, Msg, State);
 publish_delivered(Msg, MsgProps, ChPid, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(publish_delivered(Msg, MsgProps, ChPid, BQS)).
 
@@ -108,7 +114,7 @@ discard(MsgId, ChPid, State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(discard(MsgId, ChPid, BQS)).
 
 drain_confirmed(State = #state{bq = BQ}) ->
-    append2(fun (BQSn) -> BQ:drain_confirmed(BQSn) end, State);
+    append2(fun (_P, BQSn) -> BQ:drain_confirmed(BQSn) end, State);
 drain_confirmed(State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(drain_confirmed(BQS)).
 
@@ -119,16 +125,31 @@ fetchwhile(Pred, Fun, Acc, State = #null{bq = BQ, bqs = BQS}) ->
     ?res3(fetchwhile(Pred, Fun, Acc, BQS)).
 
 fetch(AckRequired, State = #state{bq = BQ}) ->
-    find2(fun (BQSn) -> BQ:fetch(AckRequired, BQSn) end, State);
+    find2(fun (P, BQSn) ->
+                  case BQ:fetch(AckRequired, BQSn) of
+                      {empty, BQSn1} ->
+                          {empty, BQSn1};
+                      {{Msg, IsDel, AckTag}, BQSn1} ->
+                          {{Msg, IsDel, {P, AckTag}}, BQSn1}
+                  end
+          end, State);
 fetch(AckRequired, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(fetch(AckRequired, BQS)).
 
 drop(AckRequired, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(drop(AckRequired, BQS)).
 
+ack(AckTags, State = #state{bq = BQ}) ->
+    fold_by_acktags2(fun (AckTagsn, BQSn) ->
+                             BQ:ack(AckTagsn, BQSn)
+                     end, AckTags, State);
 ack(AckTags, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(ack(AckTags, BQS)).
 
+requeue(AckTags, State = #state{bq = BQ}) ->
+    fold_by_acktags2(fun (AckTagsn, BQSn) ->
+                             BQ:requeue(AckTagsn, BQSn)
+                     end, AckTags, State);
 requeue(AckTags, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(requeue(AckTags, BQS)).
 
@@ -139,39 +160,39 @@ fold(Fun, Acc, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(fold(Fun, Acc, BQS)).
 
 len(#state{bq = BQ, bqss = BQSs}) ->
-    add0(fun (BQSn) -> BQ:len(BQSn) end, BQSs);
+    add0(fun (_P, BQSn) -> BQ:len(BQSn) end, BQSs);
 len(#null{bq = BQ, bqs = BQS}) ->
     BQ:len(BQS).
 
 is_empty(#state{bq = BQ, bqss = BQSs}) ->
-    any(fun (BQSn) -> BQ:is_empty(BQSn) end, BQSs);
+    any0(fun (_P, BQSn) -> BQ:is_empty(BQSn) end, BQSs);
 is_empty(#null{bq = BQ, bqs = BQS}) ->
     BQ:is_empty(BQS).
 
 depth(#state{bq = BQ, bqss = BQSs}) ->
-    add0(fun (BQSn) -> BQ:depth(BQSn) end, BQSs);
+    add0(fun (_P, BQSn) -> BQ:depth(BQSn) end, BQSs);
 depth(#null{bq = BQ, bqs = BQS}) ->
     BQ:depth(BQS).
 
 set_ram_duration_target(DurationTarget, State = #state{bq = BQ}) ->
-    fold1(fun (BQSn) ->
+    fold1(fun (_P, BQSn) ->
                   BQ:set_ram_duration_target(DurationTarget, BQSn)
           end, State);
 set_ram_duration_target(DurationTarget, State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(set_ram_duration_target(DurationTarget, BQS)).
 
 ram_duration(State = #state{bq = BQ}) ->
-    add2(fun (BQSn) -> BQ:ram_duration(BQSn) end, State);
+    add2(fun (_P, BQSn) -> BQ:ram_duration(BQSn) end, State);
 ram_duration(State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(ram_duration(BQS)).
 
 needs_timeout(#state{bq = BQ, bqss = BQSs}) ->
-    fold0(fun (_BQSn, timed) -> timed;
-              (BQSn,  idle)  -> case BQ:needs_timeout(BQSn) of
-                                    timed -> timed;
-                                    _     -> idle
-                                end;
-              (BQSn,  false) -> BQ:needs_timeout(BQSn)
+    fold0(fun (_P, _BQSn, timed) -> timed;
+              (_P, BQSn,  idle)  -> case BQ:needs_timeout(BQSn) of
+                                        timed -> timed;
+                                        _     -> idle
+                                    end;
+              (_P, BQSn,  false) -> BQ:needs_timeout(BQSn)
           end, false, BQSs);
 needs_timeout(#null{bq = BQ, bqs = BQS}) ->
     BQ:needs_timeout(BQS).
@@ -180,7 +201,7 @@ timeout(State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(timeout(BQS)).
 
 handle_pre_hibernate(State = #state{bq = BQ}) ->
-    fold1(fun (BQSn) ->
+    fold1(fun (_P, BQSn) ->
                   BQ:handle_pre_hibernate(BQSn)
           end, State);
 handle_pre_hibernate(State = #null{bq = BQ, bqs = BQS}) ->
@@ -189,6 +210,11 @@ handle_pre_hibernate(State = #null{bq = BQ, bqs = BQS}) ->
 resume(State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(resume(BQS)).
 
+msg_rates(#state{bq = BQ, bqss = BQSs}) ->
+    fold0(fun(_P, BQSn, {InN, OutN}) ->
+                  {In, Out} = BQ:msg_rates(BQSn),
+                  {InN + In, OutN + Out}
+          end, {0.0, 0.0}, BQSs);
 msg_rates(#null{bq = BQ, bqs = BQS}) ->
     BQ:msg_rates(BQS).
 
@@ -202,7 +228,7 @@ invoke(Mod, Fun, State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(invoke(Mod, Fun, BQS)).
 
 is_duplicate(Msg, State = #state{bq = BQ}) ->
-    pick2(fun (BQSn) -> BQ:is_duplicate(Msg, BQSn) end, Msg, State);
+    pick2(fun (_P, BQSn) -> BQ:is_duplicate(Msg, BQSn) end, Msg, State);
 is_duplicate(Msg, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(is_duplicate(Msg, BQS)).
 
@@ -223,20 +249,20 @@ priority(Msg = #basic_message{content = #content{properties = Props}},
         false -> priority(Msg, Rest)
     end.
 
-fold0(Fun,  Acc, [{_, BQSn} | Rest]) -> fold0(Fun, Fun(BQSn, Acc), Rest);
+fold0(Fun,  Acc, [{P, BQSn} | Rest]) -> fold0(Fun, Fun(P, BQSn, Acc), Rest);
 fold0(_Fun, Acc, [])                 -> Acc.
 
-any(Fun, BQSs) -> fold0(fun (_BQSn, true)  -> true;
-                            (BQSn,  false) -> Fun(BQSn)
-                        end, false, BQSs).
+any0(Fun, BQSs) -> fold0(fun (_P, _BQSn, true)  -> true;
+                             (P,  BQSn,  false) -> Fun(P, BQSn)
+                         end, false, BQSs).
 
-add0(Fun, BQSs) -> fold0(fun (BQSn, Acc) -> Acc + Fun(BQSn) end, 0, BQSs).
+add0(Fun, BQSs) -> fold0(fun (P, BQSn, Acc) -> Acc + Fun(P, BQSn) end, 0, BQSs).
 
 fold1(Fun, State = #state{bqss = BQSs}) ->
     State#state{bqss = fold1(Fun, BQSs, [])}.
 
 fold1(Fun, [{P, BQSn} | Rest], BQSAcc) ->
-    BQSn1 = Fun(BQSn),
+    BQSn1 = Fun(P, BQSn),
     fold1(Fun, Rest, [{P, BQSn1} | BQSAcc]);
 fold1(_Fun, [], BQSAcc) ->
     lists:reverse(BQSAcc).
@@ -247,7 +273,7 @@ fold2(Fun, AccFun, Acc, State = #state{bqss = BQSs}) ->
     {Res, State#state{bqss = BQSs1}}.
 
 fold2(Fun, AccFun, Acc, [{P, BQSn} | Rest], BQSAcc) ->
-    {Res, BQSn1} = Fun(BQSn),
+    {Res, BQSn1} = Fun(P, BQSn),
     Acc1 = AccFun(Res, Acc),
     fold2(Fun, AccFun, Acc1, Rest, [{P, BQSn1} | BQSAcc]);
 fold2(_Fun, _AccFun, Acc, [], BQSAcc) ->
@@ -255,20 +281,19 @@ fold2(_Fun, _AccFun, Acc, [], BQSAcc) ->
 
 pick1(Fun, Msg, #state{bqss = BQSs} = State) ->
     {P, BQSn} = priority(Msg, BQSs),
-    State#state{bqss = orddict:store(P, Fun(BQSn), BQSs)}.
+    State#state{bqss = orddict:store(P, Fun(P, BQSn), BQSs)}.
 
 pick2(Fun, Msg, #state{bqss = BQSs} = State) ->
     {P, BQSn} = priority(Msg, BQSs),
-    {Res, BQSn1} = Fun(BQSn),
+    {Res, BQSn1} = Fun(P, BQSn),
     {Res, State#state{bqss = orddict:store(P, BQSn1, BQSs)}}.
-
 
 find2(Fun, State = #state{bqss = BQSs}) ->
     {Res, BQSs1} = find2(Fun, BQSs, []),
     {Res, State#state{bqss = BQSs1}}.
 
 find2(Fun, [{P, BQSn} | Rest], BQSAcc) ->
-    case Fun(BQSn) of
+    case Fun(P, BQSn) of
         {empty, BQSn1} -> find2(Fun, Rest, [{P, BQSn1} | BQSAcc]);
         {Res, BQSn1}   -> {Res, lists:reverse([{P, BQSn1} | BQSAcc] ++ Rest)}
     end;
@@ -276,7 +301,7 @@ find2(_Fun, [], BQSAcc) ->
     {empty, lists:reverse(BQSAcc)}.
 
 append2(Fun, State) ->
-    fold2(Fun, fun (Res, Acc) -> Res ++ Acc end, [], State).
+    fold2(Fun, fun lists:append/2, [], State).
 
 add2(Fun, State) ->
     fold2(Fun, fun add_maybe_infinity/2, 0, State).
@@ -284,3 +309,21 @@ add2(Fun, State) ->
 add_maybe_infinity(infinity, _) -> infinity;
 add_maybe_infinity(_, infinity) -> infinity;
 add_maybe_infinity(A, B)        -> A + B.
+
+partition_acktags(AckTags) -> partition_acktags(AckTags, orddict:new()).
+
+partition_acktags([], Partitioned) ->
+    Partitioned;
+partition_acktags([{P, AckTag} | Rest], Partitioned) ->
+    partition_acktags(Rest, orddict:append(P, AckTag, Partitioned)).
+
+fold_by_acktags2(Fun, AckTags, State) ->
+    AckTagsByPriority = partition_acktags(AckTags),
+    append2(fun (P, BQSn) ->
+                    case orddict:find(P, AckTagsByPriority) of
+                        {ok, AckTagsn} -> Fun(AckTagsn, BQSn);
+                        error          -> {[], BQSn}
+                    end
+            end, State).
+
+

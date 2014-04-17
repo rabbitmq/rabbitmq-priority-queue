@@ -72,10 +72,12 @@ init(Q = #amqqueue{arguments = Args}, Recover, AsyncCallback) ->
         none -> #null{bq  = BQ,
                       bqs = BQ:init(Q, Recover, AsyncCallback)};
         _    -> #state{bq  = BQ,
-                       bqss = [{P, BQ:init(Q, Recover, AsyncCallback)} ||
+                       bqss = [{P, BQ:init(Q, Recover,
+                                           fun (M, F) ->
+                                                   AsyncCallback(M, {P, F})
+                                           end)} ||
                                   P <- Priorities]}
     end.
-
 
 terminate(Reason, State = #state{bq = BQ}) ->
     fold1(fun (_P, BQSn) -> BQ:terminate(Reason, BQSn) end, State);
@@ -87,9 +89,13 @@ terminate(Reason, State = #null{bq = BQ, bqs = BQS}) ->
 delete_and_terminate(Reason, State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(delete_and_terminate(Reason, BQS)).
 
+purge(State = #state{bq = BQ}) ->
+    fold_add2(fun (_P, BQSn) -> BQ:purge(BQSn) end, State);
 purge(State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(purge(BQS)).
 
+purge_acks(State = #state{bq = BQ}) ->
+    fold1(fun (_P, BQSn) -> BQ:purge_acks(BQSn) end, State);
 purge_acks(State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(purge_acks(BQS)).
 
@@ -110,32 +116,58 @@ publish_delivered(Msg, MsgProps, ChPid, State = #state{bq = BQ}) ->
 publish_delivered(Msg, MsgProps, ChPid, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(publish_delivered(Msg, MsgProps, ChPid, BQS)).
 
+%% TODO this is a hack. The BQ api does not give us enough information
+%% here - if we had the Msg we could look at its priority and forward
+%% to the appropriate sub-BQ. But we don't so we are stuck.
+%%
+%% But fortunately VQ ignores discard/3, so we can too, *assuming we
+%% are talking to VQ*. discard/3 is used by HA, but that's "above" us
+%% (if in use) so we don't break that either, just some hypothetical
+%% alternate BQ implementation.
+discard(_MsgId, _ChPid, State = #state{}) ->
+    State;
+    %% We should have something a bit like this here:
+    %% pick1(fun (_P, BQSn) ->
+    %%               BQ:discard(MsgId, ChPid, BQSn)
+    %%       end, Msg, State);
 discard(MsgId, ChPid, State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(discard(MsgId, ChPid, BQS)).
 
 drain_confirmed(State = #state{bq = BQ}) ->
-    append2(fun (_P, BQSn) -> BQ:drain_confirmed(BQSn) end, State);
+    fold_append2(fun (_P, BQSn) -> BQ:drain_confirmed(BQSn) end, State);
 drain_confirmed(State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(drain_confirmed(BQS)).
 
+dropwhile(Pred, State = #state{bq = BQ}) ->
+    find2(fun (_P, BQSn) -> BQ:dropwhile(Pred, BQSn) end, undefined, State);
 dropwhile(Pred, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(dropwhile(Pred, BQS)).
 
+fetchwhile(Pred, Fun, Acc, State = #state{bq = BQ}) ->
+    findfold3(fun (_P, BQSn, AccN) ->
+                      BQ:fetchwhile(Pred, Fun, AccN, BQSn)
+              end, Acc, undefined, State);
 fetchwhile(Pred, Fun, Acc, State = #null{bq = BQ, bqs = BQS}) ->
     ?res3(fetchwhile(Pred, Fun, Acc, BQS)).
 
 fetch(AckRequired, State = #state{bq = BQ}) ->
-    find2(fun (P, BQSn) ->
-                  case BQ:fetch(AckRequired, BQSn) of
-                      {empty, BQSn1} ->
-                          {empty, BQSn1};
-                      {{Msg, IsDel, AckTag}, BQSn1} ->
-                          {{Msg, IsDel, {P, AckTag}}, BQSn1}
-                  end
-          end, State);
+    find2(
+      fun (P, BQSn) ->
+              case BQ:fetch(AckRequired, BQSn) of
+                  {empty,            BQSn1} -> {empty, BQSn1};
+                  {{Msg, Del, ATag}, BQSn1} -> {{Msg, Del, {P, ATag}}, BQSn1}
+              end
+      end, empty, State);
 fetch(AckRequired, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(fetch(AckRequired, BQS)).
 
+drop(AckRequired, State = #state{bq = BQ}) ->
+    find2(fun (P, BQSn) ->
+                  case BQ:drop(AckRequired, BQSn) of
+                      {empty,           BQSn1} -> {empty, BQSn1};
+                      {{MsgId, AckTag}, BQSn1} -> {{MsgId, {P, AckTag}}, BQSn1}
+                  end
+          end, empty, State);
 drop(AckRequired, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(drop(AckRequired, BQS)).
 
@@ -153,9 +185,20 @@ requeue(AckTags, State = #state{bq = BQ}) ->
 requeue(AckTags, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(requeue(AckTags, BQS)).
 
+ackfold(MsgFun, Acc, State = #state{bq = BQ}, AckTags) ->
+    AckTagsByPriority = partition_acktags(AckTags),
+    fold2(
+      fun (P, BQSn, AccN) ->
+              case orddict:find(P, AckTagsByPriority) of
+                  {ok, AckTagsn} -> BQ:ackfold(MsgFun, AccN, BQSn, AckTagsn);
+                  error          -> {AccN, BQSn}
+              end
+      end, Acc, State);
 ackfold(MsgFun, Acc, State = #null{bq = BQ, bqs = BQS}, AckTags) ->
     ?res2(ackfold(MsgFun, Acc, BQS, AckTags)).
 
+fold(Fun, Acc, State = #state{bq = BQ}) ->
+    fold2(fun (_P, BQSn, AccN) -> BQ:fold(Fun, AccN, BQSn) end, Acc, State);
 fold(Fun, Acc, State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(fold(Fun, Acc, BQS)).
 
@@ -182,7 +225,7 @@ set_ram_duration_target(DurationTarget, State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(set_ram_duration_target(DurationTarget, BQS)).
 
 ram_duration(State = #state{bq = BQ}) ->
-    add2(fun (_P, BQSn) -> BQ:ram_duration(BQSn) end, State);
+    fold_add2(fun (_P, BQSn) -> BQ:ram_duration(BQSn) end, State);
 ram_duration(State = #null{bq = BQ, bqs = BQS}) ->
     ?res2(ram_duration(BQS)).
 
@@ -197,6 +240,8 @@ needs_timeout(#state{bq = BQ, bqss = BQSs}) ->
 needs_timeout(#null{bq = BQ, bqs = BQS}) ->
     BQ:needs_timeout(BQS).
 
+timeout(State = #state{bq = BQ}) ->
+    fold1(fun (_P, BQSn) -> BQ:timeout(BQSn) end, State);
 timeout(State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(timeout(BQS)).
 
@@ -207,6 +252,8 @@ handle_pre_hibernate(State = #state{bq = BQ}) ->
 handle_pre_hibernate(State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(handle_pre_hibernate(BQS)).
 
+resume(State = #state{bq = BQ}) ->
+    fold1(fun (_P, BQSn) -> BQ:resume(BQSn) end, State);
 resume(State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(resume(BQS)).
 
@@ -224,6 +271,8 @@ status(#state{bq = BQ, bqss = BQSs}) ->
 status(#null{bq = BQ, bqs = BQS}) ->
     BQ:status(BQS).
 
+invoke(Mod, {P, Fun}, State = #state{bq = BQ}) ->
+    pick1(fun (_P, BQSn) -> BQ:invoke(Mod, Fun, BQSn) end, P, State);
 invoke(Mod, Fun, State = #null{bq = BQ, bqs = BQS}) ->
     ?res1(invoke(Mod, Fun, BQS)).
 
@@ -239,6 +288,8 @@ bq() ->
                      rabbitmq_priority_queue, backing_queue_module),
     RealBQ.
 
+priority(P, BQSs) when is_integer(P) ->
+    {P, orddict:fetch(P, BQSs)};
 priority(_Msg, [{P, BQSn}]) ->
     {P, BQSn};
 priority(Msg = #basic_message{content = #content{properties = Props}}, 
@@ -268,43 +319,48 @@ fold1(_Fun, [], BQSAcc) ->
     lists:reverse(BQSAcc).
 
 
-fold2(Fun, AccFun, Acc, State = #state{bqss = BQSs}) ->
-    {Res, BQSs1} = fold2(Fun, AccFun, Acc, BQSs, []),
+fold2(Fun, Acc, State = #state{bqss = BQSs}) ->
+    {Res, BQSs1} = fold2(Fun, Acc, BQSs, []),
     {Res, State#state{bqss = BQSs1}}.
 
-fold2(Fun, AccFun, Acc, [{P, BQSn} | Rest], BQSAcc) ->
-    {Res, BQSn1} = Fun(P, BQSn),
-    Acc1 = AccFun(Res, Acc),
-    fold2(Fun, AccFun, Acc1, Rest, [{P, BQSn1} | BQSAcc]);
-fold2(_Fun, _AccFun, Acc, [], BQSAcc) ->
+fold2(Fun, Acc, [{P, BQSn} | Rest], BQSAcc) ->
+    {Acc1, BQSn1} = Fun(P, BQSn, Acc),
+    fold2(Fun, Acc1, Rest, [{P, BQSn1} | BQSAcc]);
+fold2(_Fun, Acc, [], BQSAcc) ->
     {Acc, lists:reverse(BQSAcc)}.
 
-pick1(Fun, Msg, #state{bqss = BQSs} = State) ->
-    {P, BQSn} = priority(Msg, BQSs),
+pick1(Fun, Prioritisable, #state{bqss = BQSs} = State) ->
+    {P, BQSn} = priority(Prioritisable, BQSs),
     State#state{bqss = orddict:store(P, Fun(P, BQSn), BQSs)}.
 
-pick2(Fun, Msg, #state{bqss = BQSs} = State) ->
-    {P, BQSn} = priority(Msg, BQSs),
+pick2(Fun, Prioritisable, #state{bqss = BQSs} = State) ->
+    {P, BQSn} = priority(Prioritisable, BQSs),
     {Res, BQSn1} = Fun(P, BQSn),
     {Res, State#state{bqss = orddict:store(P, BQSn1, BQSs)}}.
 
-find2(Fun, State = #state{bqss = BQSs}) ->
-    {Res, BQSs1} = find2(Fun, BQSs, []),
+find2(Fun, NotFound, State = #state{bqss = BQSs}) ->
+    {Res, BQSs1} = find2(Fun, NotFound, BQSs, []),
     {Res, State#state{bqss = BQSs1}}.
 
-find2(Fun, [{P, BQSn} | Rest], BQSAcc) ->
+find2(Fun, NotFound, [{P, BQSn} | Rest], BQSAcc) ->
     case Fun(P, BQSn) of
-        {empty, BQSn1} -> find2(Fun, Rest, [{P, BQSn1} | BQSAcc]);
-        {Res, BQSn1}   -> {Res, lists:reverse([{P, BQSn1} | BQSAcc] ++ Rest)}
+        {NotFound, BQSn1} -> find2(Fun, NotFound, Rest, [{P, BQSn1} | BQSAcc]);
+        {Res, BQSn1}      -> {Res, lists:reverse([{P, BQSn1} | BQSAcc] ++ Rest)}
     end;
-find2(_Fun, [], BQSAcc) ->
-    {empty, lists:reverse(BQSAcc)}.
+find2(_Fun, NotFound, [], BQSAcc) ->
+    {NotFound, lists:reverse(BQSAcc)}.
 
-append2(Fun, State) ->
-    fold2(Fun, fun lists:append/2, [], State).
+fold_append2(Fun, State) ->
+    fold2(fun (P, BQSn, Acc) ->
+                  {Res, BQSn1} = Fun(P, BQSn),
+                  {Res ++ Acc, BQSn1}
+          end, [], State).
 
-add2(Fun, State) ->
-    fold2(Fun, fun add_maybe_infinity/2, 0, State).
+fold_add2(Fun, State) ->
+    fold2(fun (P, BQSn, Acc) ->
+                  {Res, BQSn1} = Fun(P, BQSn),
+                  {add_maybe_infinity(Res, Acc), BQSn1}
+          end, 0, State).
 
 add_maybe_infinity(infinity, _) -> infinity;
 add_maybe_infinity(_, infinity) -> infinity;
@@ -319,11 +375,23 @@ partition_acktags([{P, AckTag} | Rest], Partitioned) ->
 
 fold_by_acktags2(Fun, AckTags, State) ->
     AckTagsByPriority = partition_acktags(AckTags),
-    append2(fun (P, BQSn) ->
-                    case orddict:find(P, AckTagsByPriority) of
-                        {ok, AckTagsn} -> Fun(AckTagsn, BQSn);
-                        error          -> {[], BQSn}
-                    end
-            end, State).
+    fold_append2(fun (P, BQSn) ->
+                         case orddict:find(P, AckTagsByPriority) of
+                             {ok, AckTagsn} -> Fun(AckTagsn, BQSn);
+                             error          -> {[], BQSn}
+                         end
+                 end, State).
 
+findfold3(Fun, Acc, NotFound, State = #state{bqss = BQSs}) ->
+    {Res, BQSs1} = findfold3(Fun, Acc, NotFound, BQSs, []),
+    {Res, State#state{bqss = BQSs1}}.
 
+findfold3(Fun, Acc, NotFound, [{P, BQSn} | Rest], BQSAcc) ->
+    case Fun(P, BQSn, Acc) of
+        {NotFound, Acc1, BQSn1} ->
+            findfold3(Fun, Acc1, NotFound, Rest, [{P, BQSn1} | BQSAcc]);
+        {Res, Acc1, BQSn1} ->
+            {Res, Acc1, lists:reverse([{P, BQSn1} | BQSAcc] ++ Rest)}
+    end;
+findfold3(_Fun, Acc, NotFound, [], BQSAcc) ->
+    {NotFound, Acc, lists:reverse(BQSAcc)}.

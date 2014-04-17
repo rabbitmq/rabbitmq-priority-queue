@@ -39,12 +39,14 @@
          status/1, invoke/3, is_duplicate/2]).
 
 -record(state, {bq, bqss}).
--record(null, {bq, bqs}).
+-record(passthrough, {bq, bqs}).
 
 %% See 'note on suffixes' below
--define(null1(F), State#null{bqs = BQ:F}).
--define(null2(F), {Res, BQS1} = BQ:F, {Res, State#null{bqs = BQS1}}).
--define(null3(F), {Res1, Res2, BQS1} = BQ:F, {Res1, Res2, State#null{bqs = BQS1}}).
+-define(passthrough1(F), State#passthrough{bqs = BQ:F}).
+-define(passthrough2(F),
+        {Res, BQS1} = BQ:F, {Res, State#passthrough{bqs = BQS1}}).
+-define(passthrough3(F),
+        {Res1, Res2, BQS1} = BQ:F, {Res1, Res2, State#passthrough{bqs = BQS1}}).
 
 enable() ->
     {ok, RealBQ} = application:get_env(rabbit, backing_queue_module),
@@ -70,8 +72,8 @@ init(Q = #amqqueue{arguments = Args}, Recover, AsyncCallback) ->
                  end,
     BQ = bq(),
     case Priorities of
-        none -> #null{bq  = BQ,
-                      bqs = BQ:init(Q, Recover, AsyncCallback)};
+        none -> #passthrough{bq  = BQ,
+                             bqs = BQ:init(Q, Recover, AsyncCallback)};
         _    -> #state{bq  = BQ,
                        bqss = [{P, BQ:init(Q, Recover,
                                            fun (M, F) ->
@@ -82,31 +84,33 @@ init(Q = #amqqueue{arguments = Args}, Recover, AsyncCallback) ->
 
 terminate(Reason, State = #state{bq = BQ}) ->
     foreach1(fun (_P, BQSN) -> BQ:terminate(Reason, BQSN) end, State);
-terminate(Reason, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null1(terminate(Reason, BQS)).
+terminate(Reason, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough1(terminate(Reason, BQS)).
 
 delete_and_terminate(Reason, State = #state{bq = BQ}) ->
-    foreach1(fun (_P, BQSN) -> BQ:delete_and_terminate(Reason, BQSN) end, State);
-delete_and_terminate(Reason, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null1(delete_and_terminate(Reason, BQS)).
+    foreach1(fun (_P, BQSN) ->
+                     BQ:delete_and_terminate(Reason, BQSN)
+             end, State);
+delete_and_terminate(Reason, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough1(delete_and_terminate(Reason, BQS)).
 
 purge(State = #state{bq = BQ}) ->
     fold_add2(fun (_P, BQSN) -> BQ:purge(BQSN) end, State);
-purge(State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(purge(BQS)).
+purge(State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(purge(BQS)).
 
 purge_acks(State = #state{bq = BQ}) ->
     foreach1(fun (_P, BQSN) -> BQ:purge_acks(BQSN) end, State);
-purge_acks(State = #null{bq = BQ, bqs = BQS}) ->
-    ?null1(purge_acks(BQS)).
+purge_acks(State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough1(purge_acks(BQS)).
 
 publish(Msg, MsgProps, IsDelivered, ChPid, State = #state{bq = BQ}) ->
     pick1(fun (_P, BQSN) ->
                   BQ:publish(Msg, MsgProps, IsDelivered, ChPid, BQSN)
           end, Msg, State);
 publish(Msg, MsgProps, IsDelivered, ChPid,
-        State = #null{bq = BQ, bqs = BQS}) ->
-    ?null1(publish(Msg, MsgProps, IsDelivered, ChPid, BQS)).
+        State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough1(publish(Msg, MsgProps, IsDelivered, ChPid, BQS)).
 
 publish_delivered(Msg, MsgProps, ChPid, State = #state{bq = BQ}) ->
     pick2(fun (P, BQSN) ->
@@ -114,8 +118,9 @@ publish_delivered(Msg, MsgProps, ChPid, State = #state{bq = BQ}) ->
                                       Msg, MsgProps, ChPid, BQSN),
                   {{P, AckTag}, BQSN1}
           end, Msg, State);
-publish_delivered(Msg, MsgProps, ChPid, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(publish_delivered(Msg, MsgProps, ChPid, BQS)).
+publish_delivered(Msg, MsgProps, ChPid,
+                  State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(publish_delivered(Msg, MsgProps, ChPid, BQS)).
 
 %% TODO this is a hack. The BQ api does not give us enough information
 %% here - if we had the Msg we could look at its priority and forward
@@ -131,25 +136,25 @@ discard(_MsgId, _ChPid, State = #state{}) ->
     %% pick1(fun (_P, BQSN) ->
     %%               BQ:discard(MsgId, ChPid, BQSN)
     %%       end, Msg, State);
-discard(MsgId, ChPid, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null1(discard(MsgId, ChPid, BQS)).
+discard(MsgId, ChPid, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough1(discard(MsgId, ChPid, BQS)).
 
 drain_confirmed(State = #state{bq = BQ}) ->
     fold_append2(fun (_P, BQSN) -> BQ:drain_confirmed(BQSN) end, State);
-drain_confirmed(State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(drain_confirmed(BQS)).
+drain_confirmed(State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(drain_confirmed(BQS)).
 
 dropwhile(Pred, State = #state{bq = BQ}) ->
     find2(fun (_P, BQSN) -> BQ:dropwhile(Pred, BQSN) end, undefined, State);
-dropwhile(Pred, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(dropwhile(Pred, BQS)).
+dropwhile(Pred, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(dropwhile(Pred, BQS)).
 
 fetchwhile(Pred, Fun, Acc, State = #state{bq = BQ}) ->
     findfold3(fun (_P, BQSN, AccN) ->
                       BQ:fetchwhile(Pred, Fun, AccN, BQSN)
               end, Acc, undefined, State);
-fetchwhile(Pred, Fun, Acc, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null3(fetchwhile(Pred, Fun, Acc, BQS)).
+fetchwhile(Pred, Fun, Acc, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough3(fetchwhile(Pred, Fun, Acc, BQS)).
 
 fetch(AckRequired, State = #state{bq = BQ}) ->
     find2(
@@ -159,8 +164,8 @@ fetch(AckRequired, State = #state{bq = BQ}) ->
                   {{Msg, Del, ATag}, BQSN1} -> {{Msg, Del, {P, ATag}}, BQSN1}
               end
       end, empty, State);
-fetch(AckRequired, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(fetch(AckRequired, BQS)).
+fetch(AckRequired, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(fetch(AckRequired, BQS)).
 
 drop(AckRequired, State = #state{bq = BQ}) ->
     find2(fun (P, BQSN) ->
@@ -169,22 +174,22 @@ drop(AckRequired, State = #state{bq = BQ}) ->
                       {{MsgId, AckTag}, BQSN1} -> {{MsgId, {P, AckTag}}, BQSN1}
                   end
           end, empty, State);
-drop(AckRequired, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(drop(AckRequired, BQS)).
+drop(AckRequired, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(drop(AckRequired, BQS)).
 
 ack(AckTags, State = #state{bq = BQ}) ->
     fold_by_acktags2(fun (AckTagsN, BQSN) ->
                              BQ:ack(AckTagsN, BQSN)
                      end, AckTags, State);
-ack(AckTags, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(ack(AckTags, BQS)).
+ack(AckTags, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(ack(AckTags, BQS)).
 
 requeue(AckTags, State = #state{bq = BQ}) ->
     fold_by_acktags2(fun (AckTagsN, BQSN) ->
                              BQ:requeue(AckTagsN, BQSN)
                      end, AckTags, State);
-requeue(AckTags, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(requeue(AckTags, BQS)).
+requeue(AckTags, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(requeue(AckTags, BQS)).
 
 ackfold(MsgFun, Acc, State = #state{bq = BQ}, AckTags) ->
     AckTagsByPriority = partition_acktags(AckTags),
@@ -195,40 +200,41 @@ ackfold(MsgFun, Acc, State = #state{bq = BQ}, AckTags) ->
                   error          -> {AccN, BQSN}
               end
       end, Acc, State);
-ackfold(MsgFun, Acc, State = #null{bq = BQ, bqs = BQS}, AckTags) ->
-    ?null2(ackfold(MsgFun, Acc, BQS, AckTags)).
+ackfold(MsgFun, Acc, State = #passthrough{bq = BQ, bqs = BQS}, AckTags) ->
+    ?passthrough2(ackfold(MsgFun, Acc, BQS, AckTags)).
 
 fold(Fun, Acc, State = #state{bq = BQ}) ->
     fold2(fun (_P, BQSN, AccN) -> BQ:fold(Fun, AccN, BQSN) end, Acc, State);
-fold(Fun, Acc, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(fold(Fun, Acc, BQS)).
+fold(Fun, Acc, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(fold(Fun, Acc, BQS)).
 
 len(#state{bq = BQ, bqss = BQSs}) ->
     add0(fun (_P, BQSN) -> BQ:len(BQSN) end, BQSs);
-len(#null{bq = BQ, bqs = BQS}) ->
+len(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:len(BQS).
 
 is_empty(#state{bq = BQ, bqss = BQSs}) ->
     any0(fun (_P, BQSN) -> BQ:is_empty(BQSN) end, BQSs);
-is_empty(#null{bq = BQ, bqs = BQS}) ->
+is_empty(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:is_empty(BQS).
 
 depth(#state{bq = BQ, bqss = BQSs}) ->
     add0(fun (_P, BQSN) -> BQ:depth(BQSN) end, BQSs);
-depth(#null{bq = BQ, bqs = BQS}) ->
+depth(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:depth(BQS).
 
 set_ram_duration_target(DurationTarget, State = #state{bq = BQ}) ->
     foreach1(fun (_P, BQSN) ->
                      BQ:set_ram_duration_target(DurationTarget, BQSN)
              end, State);
-set_ram_duration_target(DurationTarget, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null1(set_ram_duration_target(DurationTarget, BQS)).
+set_ram_duration_target(DurationTarget,
+                        State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough1(set_ram_duration_target(DurationTarget, BQS)).
 
 ram_duration(State = #state{bq = BQ}) ->
     fold_add2(fun (_P, BQSN) -> BQ:ram_duration(BQSN) end, State);
-ram_duration(State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(ram_duration(BQS)).
+ram_duration(State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(ram_duration(BQS)).
 
 needs_timeout(#state{bq = BQ, bqss = BQSs}) ->
     fold0(fun (_P, _BQSN, timed) -> timed;
@@ -238,49 +244,49 @@ needs_timeout(#state{bq = BQ, bqss = BQSs}) ->
                                     end;
               (_P, BQSN,  false) -> BQ:needs_timeout(BQSN)
           end, false, BQSs);
-needs_timeout(#null{bq = BQ, bqs = BQS}) ->
+needs_timeout(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:needs_timeout(BQS).
 
 timeout(State = #state{bq = BQ}) ->
     foreach1(fun (_P, BQSN) -> BQ:timeout(BQSN) end, State);
-timeout(State = #null{bq = BQ, bqs = BQS}) ->
-    ?null1(timeout(BQS)).
+timeout(State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough1(timeout(BQS)).
 
 handle_pre_hibernate(State = #state{bq = BQ}) ->
     foreach1(fun (_P, BQSN) ->
                   BQ:handle_pre_hibernate(BQSN)
           end, State);
-handle_pre_hibernate(State = #null{bq = BQ, bqs = BQS}) ->
-    ?null1(handle_pre_hibernate(BQS)).
+handle_pre_hibernate(State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough1(handle_pre_hibernate(BQS)).
 
 resume(State = #state{bq = BQ}) ->
     foreach1(fun (_P, BQSN) -> BQ:resume(BQSN) end, State);
-resume(State = #null{bq = BQ, bqs = BQS}) ->
-    ?null1(resume(BQS)).
+resume(State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough1(resume(BQS)).
 
 msg_rates(#state{bq = BQ, bqss = BQSs}) ->
     fold0(fun(_P, BQSN, {InN, OutN}) ->
                   {In, Out} = BQ:msg_rates(BQSN),
                   {InN + In, OutN + Out}
           end, {0.0, 0.0}, BQSs);
-msg_rates(#null{bq = BQ, bqs = BQS}) ->
+msg_rates(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:msg_rates(BQS).
 
 status(#state{bq = BQ, bqss = BQSs}) ->
     [[{priority, P},
       {status,   BQ:status(BQSN)}] || {P, BQSN} <- BQSs];
-status(#null{bq = BQ, bqs = BQS}) ->
+status(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:status(BQS).
 
 invoke(Mod, {P, Fun}, State = #state{bq = BQ}) ->
     pick1(fun (_P, BQSN) -> BQ:invoke(Mod, Fun, BQSN) end, P, State);
-invoke(Mod, Fun, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null1(invoke(Mod, Fun, BQS)).
+invoke(Mod, Fun, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough1(invoke(Mod, Fun, BQS)).
 
 is_duplicate(Msg, State = #state{bq = BQ}) ->
     pick2(fun (_P, BQSN) -> BQ:is_duplicate(Msg, BQSN) end, Msg, State);
-is_duplicate(Msg, State = #null{bq = BQ, bqs = BQS}) ->
-    ?null2(is_duplicate(Msg, BQS)).
+is_duplicate(Msg, State = #passthrough{bq = BQ, bqs = BQS}) ->
+    ?passthrough2(is_duplicate(Msg, BQS)).
 
 %%----------------------------------------------------------------------------
 

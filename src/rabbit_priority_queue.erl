@@ -50,8 +50,12 @@
 
 enable() ->
     {ok, RealBQ} = application:get_env(rabbit, backing_queue_module),
-    application:set_env(rabbitmq_priority_queue, backing_queue_module, RealBQ),
-    application:set_env(rabbit, backing_queue_module, ?MODULE).
+    case RealBQ of
+        ?MODULE -> ok;
+        _       -> application:set_env(
+                     rabbitmq_priority_queue, backing_queue_module, RealBQ),
+                   application:set_env(rabbit, backing_queue_module, ?MODULE)
+    end.
 
 %%----------------------------------------------------------------------------
 
@@ -98,8 +102,13 @@ collapse_recovery(QNames, DupNames, Recovery) ->
     [dict:fetch(Name, NameToTerms) || Name <- QNames].
 
 priorities(#amqqueue{arguments = Args}) ->
+    Ints = [long, short, signedint, byte],
     case rabbit_misc:table_lookup(Args, <<"x-priorities">>) of
-        {array, Array} -> lists:usort([N || {long, N} <- Array]);
+        {array, Array} -> case lists:usort([N || {T, N} <- Array,
+                                                 lists:member(T, Ints)]) of
+                              [] -> none;
+                              Ps -> Ps
+                          end;
         _              -> none
     end.
 
@@ -110,12 +119,18 @@ init(Q, Recover, AsyncCallback) ->
     case priorities(Q) of
         none -> #passthrough{bq  = BQ,
                              bqs = BQ:init(Q, Recover, AsyncCallback)};
-        Ps   -> PsTerms = lists:zip(Ps, Recover),
-                #state{bq  = BQ,
-                       bqss = [{P, BQ:init(mutate_name(P, Q), RecTerm,
-                                           fun (M, F) ->
-                                                   AsyncCallback(M, {P, F})
-                                           end)} || {P, RecTerm} <- PsTerms]}
+        Ps   -> Init = fun (P, Term) ->
+                               BQ:init(
+                                 mutate_name(P, Q), Term,
+                                 fun (M, F) -> AsyncCallback(M, {P, F}) end)
+                       end,
+                BQSs = case Recover of
+                           new -> [{P, Init(P, new)} || P <- Ps];
+                           _   -> PsTerms = lists:zip(Ps, Recover),
+                                  [{P, Init(P, Term)} || {P, Term} <- PsTerms]
+                       end,
+                #state{bq   = BQ,
+                       bqss = BQSs}
     end.
 
 terminate(Reason, State = #state{bq = BQ}) ->
@@ -416,7 +431,7 @@ find2(Fun, NotFound, State = #state{bqss = BQSs}) ->
 find2(Fun, NotFound, [{P, BQSN} | Rest], BQSAcc) ->
     case Fun(P, BQSN) of
         {NotFound, BQSN1} -> find2(Fun, NotFound, Rest, [{P, BQSN1} | BQSAcc]);
-        {Res, BQSN1}      -> {Res, lists:reverse([{P, BQSN1} | BQSAcc] ++ Rest)}
+        {Res, BQSN1}      -> {Res, lists:reverse([{P, BQSN1} | BQSAcc]) ++ Rest}
     end;
 find2(_Fun, NotFound, [], BQSAcc) ->
     {NotFound, lists:reverse(BQSAcc)}.
@@ -430,7 +445,7 @@ findfold3(Fun, Acc, NotFound, [{P, BQSN} | Rest], BQSAcc) ->
         {NotFound, Acc1, BQSN1} ->
             findfold3(Fun, Acc1, NotFound, Rest, [{P, BQSN1} | BQSAcc]);
         {Res, Acc1, BQSN1} ->
-            {Res, Acc1, lists:reverse([{P, BQSN1} | BQSAcc] ++ Rest)}
+            {Res, Acc1, lists:reverse([{P, BQSN1} | BQSAcc]) ++ Rest}
     end;
 findfold3(_Fun, Acc, NotFound, [], BQSAcc) ->
     {NotFound, Acc, lists:reverse(BQSAcc)}.

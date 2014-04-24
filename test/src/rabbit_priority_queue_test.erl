@@ -49,5 +49,46 @@
 %%
 %% [0] publish enough to get credit flow from msg store
 
-fail_test() ->
-    exit(no_tests).
+recovery_test() ->
+    {ok, Conn} = amqp_connection:start(#amqp_params_network{}),
+    {ok, Ch} = amqp_connection:open_channel(Conn),
+    Q = <<"test">>,
+    amqp_channel:call(Ch, #'queue.declare'{queue     = Q,
+                                           durable   = true,
+                                           arguments = arguments([1, 2, 3])}),
+    amqp_channel:call(Ch, #'confirm.select'{}),
+    [publish(Ch, P, Q) || P <- [1, 2, 3, 1, 2, 3, 1, 2, 3]],
+    amqp_channel:wait_for_confirms(Ch),
+    amqp_connection:close(Conn),
+
+    rabbit:stop(),
+    rabbit:start(),
+
+    {ok, Conn2} = amqp_connection:start(#amqp_params_network{}),
+    {ok, Ch2} = amqp_connection:open_channel(Conn2),
+    [get_ok(Ch2, P, Q) || P <- [1, 1, 1, 2, 2, 2, 3, 3, 3]],
+    get_empty(Ch2, Q),
+    amqp_connection:close(Conn2),
+
+    passed.
+
+%%----------------------------------------------------------------------------
+
+publish(Ch, P, Q) ->
+    amqp_channel:cast(Ch, #'basic.publish'{routing_key = Q},
+                      #amqp_msg{props   = #'P_basic'{priority      = P,
+                                                     delivery_mode = 2},
+                                payload = int2bin(P)}).
+
+get_empty(Ch, Q) ->
+    #'basic.get_empty'{} = amqp_channel:call(Ch, #'basic.get'{queue = Q}).
+
+get_ok(Ch, P, Q) ->
+    PBin = int2bin(P),
+    {#'basic.get_ok'{}, #amqp_msg{payload = PBin}} =
+        amqp_channel:call(Ch, #'basic.get'{queue = Q}).
+
+arguments(Priorities) ->
+    [{<<"x-priorities">>, array, [{byte, P} || P <- Priorities]}].
+
+int2bin(Int) -> list_to_binary(integer_to_list(Int)).

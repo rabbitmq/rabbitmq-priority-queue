@@ -55,9 +55,18 @@ enable() ->
 
 %%----------------------------------------------------------------------------
 
-start(DurableQueues) ->
+start(QNames) ->
     BQ = bq(),
-    BQ:start(DurableQueues).
+    %% TODO this expand-collapse dance is a bit ridiculous but it's what
+    %% rabbit_amqqueue:recover/0 expects. We could probably simplify
+    %% this if we rejigged recovery a bit.
+    {DupNames, ExpNames} = expand_queues(QNames),
+    case BQ:start(ExpNames) of
+        {ok, ExpRecovery} ->
+            {ok, collapse_recovery(QNames, DupNames, ExpRecovery)};
+        Else ->
+            Else
+    end.
 
 stop() ->
     BQ = bq(),
@@ -65,21 +74,48 @@ stop() ->
 
 %%----------------------------------------------------------------------------
 
-init(Q = #amqqueue{arguments = Args}, Recover, AsyncCallback) ->
-    Priorities = case rabbit_misc:table_lookup(Args, <<"x-priorities">>) of
-                     {array, Array} -> lists:usort([N || {long, N} <- Array]);
-                     _              -> none
-                 end,
+mutate_name(P, Q = #amqqueue{name = QName = #resource{name = QNameBin}}) ->
+    Q#amqqueue{name = QName#resource{name = mutate_name_bin(P, QNameBin)}}.
+
+mutate_name_bin(P, NameBin) -> <<NameBin/binary, 0, P:32>>.
+
+expand_queues(QNames) ->
+    lists:unzip(
+      lists:append([expand_queue(QName) || QName <- QNames])).
+
+expand_queue(QName = #resource{name = QNameBin}) ->
+    {ok, Q} = rabbit_misc:dirty_read({rabbit_durable_queue, QName}),
+    case priorities(Q) of
+        none -> [{QName, QName}];
+        Ps   -> [{QName, QName#resource{name = mutate_name_bin(P, QNameBin)}}
+                   || P <- Ps]
+    end.
+
+collapse_recovery(QNames, DupNames, Recovery) ->
+    NameToTerms = lists:foldl(fun({Name, RecTerm}, Dict) ->
+                                      dict:append(Name, RecTerm, Dict)
+                              end, dict:new(), lists:zip(DupNames, Recovery)),
+    [dict:fetch(Name, NameToTerms) || Name <- QNames].
+
+priorities(#amqqueue{arguments = Args}) ->
+    case rabbit_misc:table_lookup(Args, <<"x-priorities">>) of
+        {array, Array} -> lists:usort([N || {long, N} <- Array]);
+        _              -> none
+    end.
+
+%%----------------------------------------------------------------------------
+
+init(Q, Recover, AsyncCallback) ->
     BQ = bq(),
-    case Priorities of
+    case priorities(Q) of
         none -> #passthrough{bq  = BQ,
                              bqs = BQ:init(Q, Recover, AsyncCallback)};
-        _    -> #state{bq  = BQ,
-                       bqss = [{P, BQ:init(Q, Recover,
+        Ps   -> PsTerms = lists:zip(Ps, Recover),
+                #state{bq  = BQ,
+                       bqss = [{P, BQ:init(mutate_name(P, Q), RecTerm,
                                            fun (M, F) ->
                                                    AsyncCallback(M, {P, F})
-                                           end)} ||
-                                  P <- Priorities]}
+                                           end)} || {P, RecTerm} <- PsTerms]}
     end.
 
 terminate(Reason, State = #state{bq = BQ}) ->

@@ -77,7 +77,7 @@ stop() ->
 mutate_name(P, Q = #amqqueue{name = QName = #resource{name = QNameBin}}) ->
     Q#amqqueue{name = QName#resource{name = mutate_name_bin(P, QNameBin)}}.
 
-mutate_name_bin(P, NameBin) -> <<NameBin/binary, 0, P:32>>.
+mutate_name_bin(P, NameBin) -> <<NameBin/binary, 0, P:8>>.
 
 expand_queues(QNames) ->
     lists:unzip(

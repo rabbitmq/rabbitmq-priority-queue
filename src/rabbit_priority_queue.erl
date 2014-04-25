@@ -196,7 +196,7 @@ drain_confirmed(State = #passthrough{bq = BQ, bqs = BQS}) ->
     ?passthrough2(drain_confirmed(BQS)).
 
 dropwhile(Pred, State = #state{bq = BQ}) ->
-    find2(fun (P, BQSN) -> BQ:dropwhile(Pred, BQSN) end, undefined, State);
+    find2(fun (_P, BQSN) -> BQ:dropwhile(Pred, BQSN) end, undefined, State);
 dropwhile(Pred, State = #passthrough{bq = BQ, bqs = BQS}) ->
     ?passthrough2(dropwhile(Pred, BQS)).
 

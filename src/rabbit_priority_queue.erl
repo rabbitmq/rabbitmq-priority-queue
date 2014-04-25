@@ -485,7 +485,11 @@ priority(_Msg, [{P, BQSN}]) ->
     {P, BQSN};
 priority(Msg = #basic_message{content = #content{properties = Props}},
          [{P, BQSN} | Rest]) ->
-    #'P_basic'{priority = Priority} = Props,
+    #'P_basic'{priority = Priority0} = Props,
+    Priority = case Priority0 of
+                   undefined                    -> 0;
+                   _ when is_integer(Priority0) -> Priority0
+               end,
     case Priority >= P of
         true  -> {P, BQSN};
         false -> priority(Msg, Rest)

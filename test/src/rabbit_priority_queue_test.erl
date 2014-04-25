@@ -81,6 +81,18 @@ simple_order_test() ->
     amqp_connection:close(Conn),
     passed.
 
+matching_test() ->
+    {Conn, Ch} = open(),
+    Q = <<"test">>,
+    declare(Ch, Q, [5, 10]),
+    %% We round priority down unless there is no level below, and 0 is
+    %% the default
+    publish(Ch, Q, [undefined, 0, 5, 10, 15, undefined]),
+    get_all(Ch, Q, do_ack, [10, 15, undefined, 0, 5, undefined]),
+    delete(Ch, Q),
+    amqp_connection:close(Conn),
+    passed.
+
 straight_through_test() ->
     {Conn, Ch} = open(),
     Q = <<"test">>,
@@ -197,9 +209,12 @@ publish(Ch, Q, Ps) ->
 
 publish1(Ch, Q, P) ->
     amqp_channel:cast(Ch, #'basic.publish'{routing_key = Q},
-                      #amqp_msg{props   = #'P_basic'{priority      = P,
-                                                     delivery_mode = 2},
-                                payload = int2bin(P)}).
+                      #amqp_msg{props   = props(P),
+                                payload = priority2bin(P)}).
+
+props(undefined) -> #'P_basic'{delivery_mode = 2};
+props(P)         -> #'P_basic'{priority      = P,
+                               delivery_mode = 2}.
 
 consume(Ch, Q, Ack) ->
     amqp_channel:subscribe(Ch, #'basic.consume'{queue        = Q,
@@ -215,9 +230,10 @@ cancel(Ch) ->
     amqp_channel:call(Ch, #'basic.cancel'{consumer_tag = <<"ctag">>}).
 
 assert_delivered(Ch, Ack, P) ->
-    PBin = int2bin(P),
+    PBin = priority2bin(P),
     receive
-        {#'basic.deliver'{delivery_tag = DTag}, #amqp_msg{payload = PBin}} ->
+        {#'basic.deliver'{delivery_tag = DTag}, #amqp_msg{payload = PBin2}} ->
+            ?assertEqual(PBin, PBin2),
             maybe_ack(Ch, Ack, DTag)
     end.
 
@@ -230,10 +246,11 @@ get_empty(Ch, Q) ->
     #'basic.get_empty'{} = amqp_channel:call(Ch, #'basic.get'{queue = Q}).
 
 get_ok(Ch, Q, Ack, P) ->
-    PBin = int2bin(P),
-    {#'basic.get_ok'{delivery_tag = DTag}, #amqp_msg{payload = PBin}} =
+    PBin = priority2bin(P),
+    {#'basic.get_ok'{delivery_tag = DTag}, #amqp_msg{payload = PBin2}} =
         amqp_channel:call(Ch, #'basic.get'{queue  = Q,
                                            no_ack = Ack =:= no_ack}),
+    ?assertEqual(PBin, PBin2),
     maybe_ack(Ch, Ack, DTag).
 
 maybe_ack(Ch, do_ack, DTag) ->
@@ -245,4 +262,5 @@ maybe_ack(_Ch, _, DTag) ->
 arguments(Priorities) ->
     [{<<"x-priorities">>, array, [{byte, P} || P <- Priorities]}].
 
-int2bin(Int) -> list_to_binary(integer_to_list(Int)).
+priority2bin(undefined) -> <<"undefined">>;
+priority2bin(Int)       -> list_to_binary(integer_to_list(Int)).

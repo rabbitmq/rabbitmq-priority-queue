@@ -208,10 +208,7 @@ fetchwhile(Pred, Fun, Acc, State = #state{bq = BQ}) ->
     findfold3(
       fun (P, BQSN, AccN) ->
               {Res, AccN1, BQSN1} = BQ:fetchwhile(Pred, Fun, AccN, BQSN),
-              {Res, [case Tag of
-                         _ when is_integer(Tag) -> {P, Tag};
-                         _                      -> Tag
-                     end || Tag <- AccN1], BQSN1}
+              {Res, priority_on_acktags(P, AccN1), BQSN1}
       end, Acc, undefined, State);
 fetchwhile(Pred, Fun, Acc, State = #passthrough{bq = BQ, bqs = BQS}) ->
     ?passthrough3(fetchwhile(Pred, Fun, Acc, BQS)).
@@ -251,13 +248,16 @@ requeue(AckTags, State = #state{bq = BQ}) ->
 requeue(AckTags, State = #passthrough{bq = BQ, bqs = BQS}) ->
     ?passthrough2(requeue(AckTags, BQS)).
 
+%% Similar problem to fetchwhile/4
 ackfold(MsgFun, Acc, State = #state{bq = BQ}, AckTags) ->
     AckTagsByPriority = partition_acktags(AckTags),
     fold2(
       fun (P, BQSN, AccN) ->
               case orddict:find(P, AckTagsByPriority) of
-                  {ok, AckTagsN} -> BQ:ackfold(MsgFun, AccN, BQSN, AckTagsN);
-                  error          -> {AccN, BQSN}
+                  {ok, ATagsN} -> {AccN1, BQSN1} =
+                                      BQ:ackfold(MsgFun, AccN, BQSN, ATagsN),
+                                  {priority_on_acktags(P, AccN1), BQSN1};
+                  error        -> {AccN, BQSN}
               end
       end, Acc, State);
 ackfold(MsgFun, Acc, State = #passthrough{bq = BQ, bqs = BQS}, AckTags) ->
@@ -484,3 +484,8 @@ partition_acktags([], Partitioned) ->
 partition_acktags([{P, AckTag} | Rest], Partitioned) ->
     partition_acktags(Rest, orddict:append(P, AckTag, Partitioned)).
 
+priority_on_acktags(P, AckTags) ->
+    [case Tag of
+         _ when is_integer(Tag) -> {P, Tag};
+         _                      -> Tag
+     end || Tag <- AckTags].

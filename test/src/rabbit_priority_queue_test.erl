@@ -36,7 +36,8 @@
 %% * dropwhile/2            - expire messages without DLX
 %% * fetchwhile/4           - expire messages with DLX
 %% * ackfold/4              - reject messages with DLX
-%% * requeue/2              - kill consumer w unacked msgs
+%% * requeue/2              - reject messages without DLX
+%% * drop/2                 - maxlen messages without DLX
 %% * purge/1                - issue AMQP queue.purge
 %% * purge_acks/1           - mirror queue explicit sync with unacked msgs
 %% * fold/3                 - mirror queue explicit sync
@@ -56,11 +57,12 @@ recovery_test() ->
     publish(Ch, Q, [1, 2, 3, 1, 2, 3, 1, 2, 3]),
     amqp_connection:close(Conn),
 
+    %% TODO these break coverage
     rabbit:stop(),
     rabbit:start(),
 
     {Conn2, Ch2} = open(),
-    get_all(Ch2, Q, true, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
+    get_all(Ch2, Q, do_ack, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
     delete(Ch2, Q),
     amqp_connection:close(Conn2),
     passed.
@@ -70,11 +72,11 @@ simple_order_test() ->
     Q = <<"test">>,
     declare(Ch, Q, [1, 2, 3]),
     publish(Ch, Q, [1, 2, 3, 1, 2, 3, 1, 2, 3]),
-    get_all(Ch, Q, true, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
+    get_all(Ch, Q, do_ack, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
     publish(Ch, Q, [2, 3, 1, 2, 3, 1, 2, 3, 1]),
-    get_all(Ch, Q, false, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
+    get_all(Ch, Q, no_ack, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
     publish(Ch, Q, [3, 1, 2, 3, 1, 2, 3, 1, 2]),
-    get_all(Ch, Q, true, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
+    get_all(Ch, Q, do_ack, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
     delete(Ch, Q),
     amqp_connection:close(Conn),
     passed.
@@ -90,7 +92,7 @@ straight_through_test() ->
               assert_delivered(Ch, Ack, P)
           end || P <- [1, 2, 3]],
          cancel(Ch)
-     end || Ack <- [true, false]],
+     end || Ack <- [do_ack, no_ack]],
     get_empty(Ch, Q),
     delete(Ch, Q),
     amqp_connection:close(Conn),
@@ -110,6 +112,64 @@ dropwhile_fetchwhile_test() ->
                  [{<<"x-message-ttl">>,          long,    1},
                   {<<"x-dead-letter-exchange">>, longstr, <<"amq.fanout">>}]
                 ]],
+    amqp_connection:close(Conn),
+    passed.
+
+ackfold_test() ->
+    {Conn, Ch} = open(),
+    Q = <<"test">>,
+    Q2 = <<"test2">>,
+    declare(Ch, Q,
+            [{<<"x-dead-letter-exchange">>, longstr, <<>>},
+             {<<"x-dead-letter-routing-key">>, longstr, Q2}
+             | arguments([1, 2, 3])]),
+    declare(Ch, Q2, []),
+    publish(Ch, Q, [3, 2, 1]),
+    [_, _, DTag] = get_all(Ch, Q, manual_ack, [1, 2, 3]),
+    amqp_channel:cast(Ch, #'basic.nack'{delivery_tag = DTag,
+                                        multiple     = true,
+                                        requeue      = false}),
+    timer:sleep(100),
+    get_all(Ch, Q2, do_ack, [1, 2, 3]),
+    delete(Ch, Q),
+    delete(Ch, Q2),
+    amqp_connection:close(Conn),
+    passed.
+
+requeue_test() ->
+    {Conn, Ch} = open(),
+    Q = <<"test">>,
+    declare(Ch, Q, [1, 2, 3]),
+    publish(Ch, Q, [3, 2, 1]),
+    [_, _, DTag] = get_all(Ch, Q, manual_ack, [1, 2, 3]),
+    amqp_channel:cast(Ch, #'basic.nack'{delivery_tag = DTag,
+                                        multiple     = true,
+                                        requeue      = true}),
+    get_all(Ch, Q, do_ack, [1, 2, 3]),
+    delete(Ch, Q),
+    amqp_connection:close(Conn),
+    passed.
+
+drop_test() ->
+    {Conn, Ch} = open(),
+    Q = <<"test">>,
+    declare(Ch, Q, [{<<"x-max-length">>, long, 4} | arguments([1, 2, 3])]),
+    publish(Ch, Q, [1, 2, 3, 1, 2, 3, 1, 2, 3]),
+    %% We drop from the head, so this is according to the "spec" even
+    %% if not likely to be what the user wants.
+    get_all(Ch, Q, do_ack, [2, 3, 3, 3]),
+    delete(Ch, Q),
+    amqp_connection:close(Conn),
+    passed.
+
+purge_test() ->
+    {Conn, Ch} = open(),
+    Q = <<"test">>,
+    declare(Ch, Q, [1, 2, 3]),
+    publish(Ch, Q, [3, 2, 1]),
+    amqp_channel:call(Ch, #'queue.purge'{queue = Q}),
+    get_empty(Ch, Q),
+    delete(Ch, Q),
     amqp_connection:close(Conn),
     passed.
 
@@ -143,7 +203,7 @@ publish1(Ch, Q, P) ->
 
 consume(Ch, Q, Ack) ->
     amqp_channel:subscribe(Ch, #'basic.consume'{queue        = Q,
-                                                no_ack       = not Ack,
+                                                no_ack       = Ack =:= no_ack,
                                                 consumer_tag = <<"ctag">>},
                            self()),
     receive
@@ -162,8 +222,9 @@ assert_delivered(Ch, Ack, P) ->
     end.
 
 get_all(Ch, Q, Ack, Ps) ->
-    [get_ok(Ch, Q, true, P) || P <- Ps],
-    get_empty(Ch, Q).
+    DTags = [get_ok(Ch, Q, true, P) || P <- Ps],
+    get_empty(Ch, Q),
+    DTags.
 
 get_empty(Ch, Q) ->
     #'basic.get_empty'{} = amqp_channel:call(Ch, #'basic.get'{queue = Q}).
@@ -172,13 +233,14 @@ get_ok(Ch, Q, Ack, P) ->
     PBin = int2bin(P),
     {#'basic.get_ok'{delivery_tag = DTag}, #amqp_msg{payload = PBin}} =
         amqp_channel:call(Ch, #'basic.get'{queue  = Q,
-                                           no_ack = not Ack}),
+                                           no_ack = Ack =:= no_ack}),
     maybe_ack(Ch, Ack, DTag).
 
-maybe_ack(Ch, true, DTag) ->
-    amqp_channel:cast(Ch, #'basic.ack'{delivery_tag = DTag});
-maybe_ack(_Ch, false, _DTag) ->
-    ok.
+maybe_ack(Ch, do_ack, DTag) ->
+    amqp_channel:cast(Ch, #'basic.ack'{delivery_tag = DTag}),
+    DTag;
+maybe_ack(_Ch, _, DTag) ->
+    DTag.
 
 arguments(Priorities) ->
     [{<<"x-priorities">>, array, [{byte, P} || P <- Priorities]}].

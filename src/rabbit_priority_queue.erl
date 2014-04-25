@@ -196,14 +196,23 @@ drain_confirmed(State = #passthrough{bq = BQ, bqs = BQS}) ->
     ?passthrough2(drain_confirmed(BQS)).
 
 dropwhile(Pred, State = #state{bq = BQ}) ->
-    find2(fun (_P, BQSN) -> BQ:dropwhile(Pred, BQSN) end, undefined, State);
+    find2(fun (P, BQSN) -> BQ:dropwhile(Pred, BQSN) end, undefined, State);
 dropwhile(Pred, State = #passthrough{bq = BQ, bqs = BQS}) ->
     ?passthrough2(dropwhile(Pred, BQS)).
 
+%% TODO this is a bit nasty. In the one place where fetchwhile/4 is
+%% actually used the accumulator is a list of acktags, which of course
+%% we need to mutate - so we do that although we are encoding an
+%% assumption here.
 fetchwhile(Pred, Fun, Acc, State = #state{bq = BQ}) ->
-    findfold3(fun (_P, BQSN, AccN) ->
-                      BQ:fetchwhile(Pred, Fun, AccN, BQSN)
-              end, Acc, undefined, State);
+    findfold3(
+      fun (P, BQSN, AccN) ->
+              {Res, AccN1, BQSN1} = BQ:fetchwhile(Pred, Fun, AccN, BQSN),
+              {Res, [case Tag of
+                         _ when is_integer(Tag) -> {P, Tag};
+                         _                      -> Tag
+                     end || Tag <- AccN1], BQSN1}
+      end, Acc, undefined, State);
 fetchwhile(Pred, Fun, Acc, State = #passthrough{bq = BQ, bqs = BQS}) ->
     ?passthrough3(fetchwhile(Pred, Fun, Acc, BQS)).
 
@@ -265,7 +274,7 @@ len(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:len(BQS).
 
 is_empty(#state{bq = BQ, bqss = BQSs}) ->
-    any0(fun (_P, BQSN) -> BQ:is_empty(BQSN) end, BQSs);
+    all0(fun (_P, BQSN) -> BQ:is_empty(BQSN) end, BQSs);
 is_empty(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:is_empty(BQS).
 
@@ -359,10 +368,10 @@ bq() ->
 fold0(Fun,  Acc, [{P, BQSN} | Rest]) -> fold0(Fun, Fun(P, BQSN, Acc), Rest);
 fold0(_Fun, Acc, [])                 -> Acc.
 
-%% Does any BQ match?
-any0(Pred, BQSs) -> fold0(fun (_P, _BQSN, true)  -> true;
-                              (P,  BQSN,  false) -> Pred(P, BQSN)
-                          end, false, BQSs).
+%% Do all BQs match?
+all0(Pred, BQSs) -> fold0(fun (_P, _BQSN, false) -> false;
+                              (P,  BQSN,  true)  -> Pred(P, BQSN)
+                          end, true, BQSs).
 
 %% Sum results
 add0(Fun, BQSs) -> fold0(fun (P, BQSN, Acc) -> Acc + Fun(P, BQSN) end, 0, BQSs).
@@ -438,8 +447,8 @@ find2(_Fun, NotFound, [], BQSAcc) ->
 
 %% Run through BQs in priority order like find2 but also folding as we go.
 findfold3(Fun, Acc, NotFound, State = #state{bqss = BQSs}) ->
-    {Res, BQSs1} = findfold3(Fun, Acc, NotFound, BQSs, []),
-    {Res, State#state{bqss = BQSs1}}.
+    {Res, Acc1, BQSs1} = findfold3(Fun, Acc, NotFound, BQSs, []),
+    {Res, Acc1, State#state{bqss = BQSs1}}.
 findfold3(Fun, Acc, NotFound, [{P, BQSN} | Rest], BQSAcc) ->
     case Fun(P, BQSN, Acc) of
         {NotFound, Acc1, BQSN1} ->

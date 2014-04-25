@@ -50,43 +50,135 @@
 %% [0] publish enough to get credit flow from msg store
 
 recovery_test() ->
-    {ok, Conn} = amqp_connection:start(#amqp_params_network{}),
-    {ok, Ch} = amqp_connection:open_channel(Conn),
+    {Conn, Ch} = open(),
     Q = <<"test">>,
-    amqp_channel:call(Ch, #'queue.declare'{queue     = Q,
-                                           durable   = true,
-                                           arguments = arguments([1, 2, 3])}),
-    amqp_channel:call(Ch, #'confirm.select'{}),
-    [publish(Ch, P, Q) || P <- [1, 2, 3, 1, 2, 3, 1, 2, 3]],
-    amqp_channel:wait_for_confirms(Ch),
+    declare(Ch, Q, [1, 2, 3]),
+    publish(Ch, Q, [1, 2, 3, 1, 2, 3, 1, 2, 3]),
     amqp_connection:close(Conn),
 
     rabbit:stop(),
     rabbit:start(),
 
-    {ok, Conn2} = amqp_connection:start(#amqp_params_network{}),
-    {ok, Ch2} = amqp_connection:open_channel(Conn2),
-    [get_ok(Ch2, P, Q) || P <- [1, 1, 1, 2, 2, 2, 3, 3, 3]],
-    get_empty(Ch2, Q),
+    {Conn2, Ch2} = open(),
+    get_all(Ch2, Q, true, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
+    delete(Ch2, Q),
     amqp_connection:close(Conn2),
+    passed.
 
+simple_order_test() ->
+    {Conn, Ch} = open(),
+    Q = <<"test">>,
+    declare(Ch, Q, [1, 2, 3]),
+    publish(Ch, Q, [1, 2, 3, 1, 2, 3, 1, 2, 3]),
+    get_all(Ch, Q, true, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
+    publish(Ch, Q, [2, 3, 1, 2, 3, 1, 2, 3, 1]),
+    get_all(Ch, Q, false, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
+    publish(Ch, Q, [3, 1, 2, 3, 1, 2, 3, 1, 2]),
+    get_all(Ch, Q, true, [1, 1, 1, 2, 2, 2, 3, 3, 3]),
+    delete(Ch, Q),
+    amqp_connection:close(Conn),
+    passed.
+
+straight_through_test() ->
+    {Conn, Ch} = open(),
+    Q = <<"test">>,
+    declare(Ch, Q, [1, 2, 3]),
+    [begin
+         consume(Ch, Q, Ack),
+         [begin
+              publish1(Ch, Q, P),
+              assert_delivered(Ch, Ack, P)
+          end || P <- [1, 2, 3]],
+         cancel(Ch)
+     end || Ack <- [true, false]],
+    get_empty(Ch, Q),
+    delete(Ch, Q),
+    amqp_connection:close(Conn),
+    passed.
+
+dropwhile_fetchwhile_test() ->
+    {Conn, Ch} = open(),
+    Q = <<"test">>,
+    [begin
+         declare(Ch, Q, Args ++ arguments([1, 2, 3])),
+         publish(Ch, Q, [1, 2, 3, 1, 2, 3, 1, 2, 3]),
+         timer:sleep(10),
+         get_empty(Ch, Q),
+         delete(Ch, Q)
+     end ||
+        Args <- [[{<<"x-message-ttl">>, long, 1}],
+                 [{<<"x-message-ttl">>,          long,    1},
+                  {<<"x-dead-letter-exchange">>, longstr, <<"amq.fanout">>}]
+                ]],
+    amqp_connection:close(Conn),
     passed.
 
 %%----------------------------------------------------------------------------
+open() ->
+    {ok, Conn} = amqp_connection:start(#amqp_params_network{}),
+    {ok, Ch} = amqp_connection:open_channel(Conn),
+    {Conn, Ch}.
 
-publish(Ch, P, Q) ->
+declare(Ch, Q, [P | _] = Ps) when is_integer(P) ->
+    declare(Ch, Q, arguments(Ps));
+
+declare(Ch, Q, Args) ->
+    amqp_channel:call(Ch, #'queue.declare'{queue     = Q,
+                                           durable   = true,
+                                           arguments = Args}).
+
+delete(Ch, Q) ->
+    amqp_channel:call(Ch, #'queue.delete'{queue = Q}).
+
+publish(Ch, Q, Ps) ->
+    amqp_channel:call(Ch, #'confirm.select'{}),
+    [publish1(Ch, Q, P) || P <- Ps],
+    amqp_channel:wait_for_confirms(Ch).
+
+publish1(Ch, Q, P) ->
     amqp_channel:cast(Ch, #'basic.publish'{routing_key = Q},
                       #amqp_msg{props   = #'P_basic'{priority      = P,
                                                      delivery_mode = 2},
                                 payload = int2bin(P)}).
 
+consume(Ch, Q, Ack) ->
+    amqp_channel:subscribe(Ch, #'basic.consume'{queue        = Q,
+                                                no_ack       = not Ack,
+                                                consumer_tag = <<"ctag">>},
+                           self()),
+    receive
+        #'basic.consume_ok'{consumer_tag = <<"ctag">>} ->
+             ok
+    end.
+
+cancel(Ch) ->
+    amqp_channel:call(Ch, #'basic.cancel'{consumer_tag = <<"ctag">>}).
+
+assert_delivered(Ch, Ack, P) ->
+    PBin = int2bin(P),
+    receive
+        {#'basic.deliver'{delivery_tag = DTag}, #amqp_msg{payload = PBin}} ->
+            maybe_ack(Ch, Ack, DTag)
+    end.
+
+get_all(Ch, Q, Ack, Ps) ->
+    [get_ok(Ch, Q, true, P) || P <- Ps],
+    get_empty(Ch, Q).
+
 get_empty(Ch, Q) ->
     #'basic.get_empty'{} = amqp_channel:call(Ch, #'basic.get'{queue = Q}).
 
-get_ok(Ch, P, Q) ->
+get_ok(Ch, Q, Ack, P) ->
     PBin = int2bin(P),
-    {#'basic.get_ok'{}, #amqp_msg{payload = PBin}} =
-        amqp_channel:call(Ch, #'basic.get'{queue = Q}).
+    {#'basic.get_ok'{delivery_tag = DTag}, #amqp_msg{payload = PBin}} =
+        amqp_channel:call(Ch, #'basic.get'{queue  = Q,
+                                           no_ack = not Ack}),
+    maybe_ack(Ch, Ack, DTag).
+
+maybe_ack(Ch, true, DTag) ->
+    amqp_channel:cast(Ch, #'basic.ack'{delivery_tag = DTag});
+maybe_ack(_Ch, false, _DTag) ->
+    ok.
 
 arguments(Priorities) ->
     [{<<"x-priorities">>, array, [{byte, P} || P <- Priorities]}].

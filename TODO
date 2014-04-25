@@ -1,5 +1,3 @@
 Tests
 BQ status clarity
-Documentation
-  Note on expiry promptness
-  Note on maxlen not really being very useful
+Rethink 0 priority equivalence and plugin disabling?

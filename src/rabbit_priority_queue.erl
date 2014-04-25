@@ -104,8 +104,9 @@ collapse_recovery(QNames, DupNames, Recovery) ->
 priorities(#amqqueue{arguments = Args}) ->
     Ints = [long, short, signedint, byte],
     case rabbit_misc:table_lookup(Args, <<"x-priorities">>) of
-        {array, Array} -> case lists:usort([N || {T, N} <- Array,
-                                                 lists:member(T, Ints)]) of
+        {array, Array} -> case lists:reverse(
+                                 lists:usort([N || {T, N} <- Array,
+                                                   lists:member(T, Ints)])) of
                               [] -> none;
                               Ps -> Ps
                           end;
@@ -378,7 +379,7 @@ add0(Fun, BQSs) -> fold0(fun (P, BQSN, Acc) -> Acc + Fun(P, BQSN) end, 0, BQSs).
 
 %% Apply for all states
 foreach1(Fun, State = #state{bqss = BQSs}) ->
-    State#state{bqss = foreach1(Fun, BQSs, [])}.
+    a(State#state{bqss = foreach1(Fun, BQSs, [])}).
 foreach1(Fun, [{P, BQSN} | Rest], BQSAcc) ->
     BQSN1 = Fun(P, BQSN),
     foreach1(Fun, Rest, [{P, BQSN1} | BQSAcc]);
@@ -388,12 +389,12 @@ foreach1(_Fun, [], BQSAcc) ->
 %% For a given thing, just go to its BQ
 pick1(Fun, Prioritisable, #state{bqss = BQSs} = State) ->
     {P, BQSN} = priority(Prioritisable, BQSs),
-    State#state{bqss = orddict:store(P, Fun(P, BQSN), BQSs)}.
+    a(State#state{bqss = bq_store(P, Fun(P, BQSN), BQSs)}).
 
 %% Fold over results
 fold2(Fun, Acc, State = #state{bqss = BQSs}) ->
     {Res, BQSs1} = fold2(Fun, Acc, BQSs, []),
-    {Res, State#state{bqss = BQSs1}}.
+    {Res, a(State#state{bqss = BQSs1})}.
 fold2(Fun, Acc, [{P, BQSN} | Rest], BQSAcc) ->
     {Acc1, BQSN1} = Fun(P, BQSN, Acc),
     fold2(Fun, Acc1, Rest, [{P, BQSN1} | BQSAcc]);
@@ -430,13 +431,13 @@ fold_by_acktags2(Fun, AckTags, State) ->
 pick2(Fun, Prioritisable, #state{bqss = BQSs} = State) ->
     {P, BQSN} = priority(Prioritisable, BQSs),
     {Res, BQSN1} = Fun(P, BQSN),
-    {Res, State#state{bqss = orddict:store(P, BQSN1, BQSs)}}.
+    {Res, a(State#state{bqss = bq_store(P, BQSN1, BQSs)})}.
 
 %% Run through BQs in priority order until one does not return
 %% {NotFound, NewState} or we have gone through them all.
 find2(Fun, NotFound, State = #state{bqss = BQSs}) ->
     {Res, BQSs1} = find2(Fun, NotFound, BQSs, []),
-    {Res, State#state{bqss = BQSs1}}.
+    {Res, a(State#state{bqss = BQSs1})}.
 find2(Fun, NotFound, [{P, BQSN} | Rest], BQSAcc) ->
     case Fun(P, BQSN) of
         {NotFound, BQSN1} -> find2(Fun, NotFound, Rest, [{P, BQSN1} | BQSAcc]);
@@ -448,7 +449,7 @@ find2(_Fun, NotFound, [], BQSAcc) ->
 %% Run through BQs in priority order like find2 but also folding as we go.
 findfold3(Fun, Acc, NotFound, State = #state{bqss = BQSs}) ->
     {Res, Acc1, BQSs1} = findfold3(Fun, Acc, NotFound, BQSs, []),
-    {Res, Acc1, State#state{bqss = BQSs1}}.
+    {Res, Acc1, a(State#state{bqss = BQSs1})}.
 findfold3(Fun, Acc, NotFound, [{P, BQSN} | Rest], BQSAcc) ->
     case Fun(P, BQSN, Acc) of
         {NotFound, Acc1, BQSN1} ->
@@ -459,16 +460,33 @@ findfold3(Fun, Acc, NotFound, [{P, BQSN} | Rest], BQSAcc) ->
 findfold3(_Fun, Acc, NotFound, [], BQSAcc) ->
     {NotFound, Acc, lists:reverse(BQSAcc)}.
 
+bq_fetch(P, [])               -> exit({not_found, P});
+bq_fetch(P, [{P,  BQSN} | _]) -> BQSN;
+bq_fetch(P, [{_, _BQSN} | T]) -> bq_fetch(P, T).
+
+bq_store(P, BQS, BQSs) ->
+    [{PN, case PN of
+              P -> BQS;
+              _ -> BQSN
+          end} || {PN, BQSN} <- BQSs].
+
+a(State = #state{bqss = BQSs}) ->
+    Ps = [P || {P, _} <- BQSs],
+    case lists:reverse(lists:usort(Ps)) of
+        Ps -> State;
+        _  -> exit({bad_order, Ps})
+    end.
+
 %%----------------------------------------------------------------------------
 
 priority(P, BQSs) when is_integer(P) ->
-    {P, orddict:fetch(P, BQSs)};
+    {P, bq_fetch(P, BQSs)};
 priority(_Msg, [{P, BQSN}]) ->
     {P, BQSN};
 priority(Msg = #basic_message{content = #content{properties = Props}},
          [{P, BQSN} | Rest]) ->
     #'P_basic'{priority = Priority} = Props,
-    case Priority =< P of
+    case Priority >= P of
         true  -> {P, BQSN};
         false -> priority(Msg, Rest)
     end.

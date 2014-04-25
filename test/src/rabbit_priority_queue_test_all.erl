@@ -19,7 +19,7 @@
 -export([all_tests/0]).
 
 all_tests() ->
-    ok = eunit:test(tests(rabbit_priority_queue_test, 6000), [verbose]).
+    ok = eunit:test(tests(rabbit_priority_queue_test, 60), [verbose]).
 
 tests(Module, Timeout) ->
     {foreach, fun() -> ok end,

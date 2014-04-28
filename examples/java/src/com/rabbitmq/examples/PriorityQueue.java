@@ -14,21 +14,23 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 
 public class PriorityQueue {
+    private static final String QUEUE = "my-priority-queue";
+
     public static void main(String[] argv) throws Exception {
         ConnectionFactory factory = new ConnectionFactory();
         Connection conn = factory.newConnection();
         Channel ch = conn.createChannel();
 
         Map<String, Object> args = new HashMap<String, Object>();
-        args.put("x-priorities", new Integer[]{0, 5, 10});
-        ch.queueDeclare("priorities", true, false, false, args);
+        args.put("x-max-priority", 10);
+        ch.queueDeclare(QUEUE, true, false, false, args);
 
         publish(ch, 0);
         publish(ch, 5);
         publish(ch, 10);
 
         final CountDownLatch latch = new CountDownLatch(3);
-        ch.basicConsume("priorities", true, new DefaultConsumer(ch) {
+        ch.basicConsume(QUEUE, true, new DefaultConsumer(ch) {
             @Override
             public void handleDelivery(String consumerTag, Envelope envelope, BasicProperties properties, byte[] body) throws IOException {
                 System.out.println("Received " + new String(body));
@@ -44,7 +46,6 @@ public class PriorityQueue {
         BasicProperties props = MessageProperties.PERSISTENT_BASIC.builder().priority(priority).build();
         String body = "message with priority " + priority;
         System.out.println("Sent " + body);
-        ch.basicPublish("", "priorities", props, body.getBytes());
+        ch.basicPublish("", QUEUE, props, body.getBytes());
     }
 }
-

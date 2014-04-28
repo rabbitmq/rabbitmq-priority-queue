@@ -53,7 +53,7 @@
 recovery_test() ->
     {Conn, Ch} = open(),
     Q = <<"test">>,
-    declare(Ch, Q, [1, 2, 3]),
+    declare(Ch, Q, 3),
     publish(Ch, Q, [1, 2, 3, 1, 2, 3, 1, 2, 3]),
     amqp_connection:close(Conn),
 
@@ -70,7 +70,7 @@ recovery_test() ->
 simple_order_test() ->
     {Conn, Ch} = open(),
     Q = <<"test">>,
-    declare(Ch, Q, [1, 2, 3]),
+    declare(Ch, Q, 3),
     publish(Ch, Q, [1, 2, 3, 1, 2, 3, 1, 2, 3]),
     get_all(Ch, Q, do_ack, [3, 3, 3, 2, 2, 2, 1, 1, 1]),
     publish(Ch, Q, [2, 3, 1, 2, 3, 1, 2, 3, 1]),
@@ -84,11 +84,10 @@ simple_order_test() ->
 matching_test() ->
     {Conn, Ch} = open(),
     Q = <<"test">>,
-    declare(Ch, Q, [5, 10]),
-    %% We round priority down unless there is no level below, and 0 is
-    %% the default
-    publish(Ch, Q, [undefined, 0, 5, 10, 15, undefined]),
-    get_all(Ch, Q, do_ack, [10, 15, undefined, 0, 5, undefined]),
+    declare(Ch, Q, 5),
+    %% We round priority down, and 0 is the default
+    publish(Ch, Q, [undefined, 0, 5, 10, undefined]),
+    get_all(Ch, Q, do_ack, [5, 10, undefined, 0, undefined]),
     delete(Ch, Q),
     amqp_connection:close(Conn),
     passed.
@@ -96,7 +95,7 @@ matching_test() ->
 straight_through_test() ->
     {Conn, Ch} = open(),
     Q = <<"test">>,
-    declare(Ch, Q, [1, 2, 3]),
+    declare(Ch, Q, 3),
     [begin
          consume(Ch, Q, Ack),
          [begin
@@ -114,7 +113,7 @@ dropwhile_fetchwhile_test() ->
     {Conn, Ch} = open(),
     Q = <<"test">>,
     [begin
-         declare(Ch, Q, Args ++ arguments([1, 2, 3])),
+         declare(Ch, Q, Args ++ arguments(3)),
          publish(Ch, Q, [1, 2, 3, 1, 2, 3, 1, 2, 3]),
          timer:sleep(10),
          get_empty(Ch, Q),
@@ -134,8 +133,8 @@ ackfold_test() ->
     declare(Ch, Q,
             [{<<"x-dead-letter-exchange">>, longstr, <<>>},
              {<<"x-dead-letter-routing-key">>, longstr, Q2}
-             | arguments([1, 2, 3])]),
-    declare(Ch, Q2, []),
+             | arguments(3)]),
+    declare(Ch, Q2, none),
     publish(Ch, Q, [1, 2, 3]),
     [_, _, DTag] = get_all(Ch, Q, manual_ack, [3, 2, 1]),
     amqp_channel:cast(Ch, #'basic.nack'{delivery_tag = DTag,
@@ -151,7 +150,7 @@ ackfold_test() ->
 requeue_test() ->
     {Conn, Ch} = open(),
     Q = <<"test">>,
-    declare(Ch, Q, [1, 2, 3]),
+    declare(Ch, Q, 3),
     publish(Ch, Q, [1, 2, 3]),
     [_, _, DTag] = get_all(Ch, Q, manual_ack, [3, 2, 1]),
     amqp_channel:cast(Ch, #'basic.nack'{delivery_tag = DTag,
@@ -165,7 +164,7 @@ requeue_test() ->
 drop_test() ->
     {Conn, Ch} = open(),
     Q = <<"test">>,
-    declare(Ch, Q, [{<<"x-max-length">>, long, 4} | arguments([1, 2, 3])]),
+    declare(Ch, Q, [{<<"x-max-length">>, long, 4} | arguments(3)]),
     publish(Ch, Q, [1, 2, 3, 1, 2, 3, 1, 2, 3]),
     %% We drop from the head, so this is according to the "spec" even
     %% if not likely to be what the user wants.
@@ -177,7 +176,7 @@ drop_test() ->
 purge_test() ->
     {Conn, Ch} = open(),
     Q = <<"test">>,
-    declare(Ch, Q, [1, 2, 3]),
+    declare(Ch, Q, 3),
     publish(Ch, Q, [1, 2, 3]),
     amqp_channel:call(Ch, #'queue.purge'{queue = Q}),
     get_empty(Ch, Q),
@@ -189,7 +188,7 @@ mirror_queue_sync_test() ->
     {Conn, Ch} = open(),
     start_second_node(),
     Q = <<"test">>,
-    declare(Ch, Q, [1, 2, 3]),
+    declare(Ch, Q, 3),
     publish(Ch, Q, [1, 2, 3]),
     ok = rabbit_policy:set(
            <<"/">>, <<"HA">>, <<".*">>, [{<<"ha-mode">>, <<"all">>}], 0,
@@ -211,13 +210,12 @@ open() ->
     {ok, Ch} = amqp_connection:open_channel(Conn),
     {Conn, Ch}.
 
-declare(Ch, Q, [P | _] = Ps) when is_integer(P) ->
-    declare(Ch, Q, arguments(Ps));
-
-declare(Ch, Q, Args) ->
+declare(Ch, Q, Args) when is_list(Args) ->
     amqp_channel:call(Ch, #'queue.declare'{queue     = Q,
                                            durable   = true,
-                                           arguments = Args}).
+                                           arguments = Args});
+declare(Ch, Q, Max) ->
+    declare(Ch, Q, arguments(Max)).
 
 delete(Ch, Q) ->
     amqp_channel:call(Ch, #'queue.delete'{queue = Q}).
@@ -282,8 +280,8 @@ maybe_ack(Ch, do_ack, DTag) ->
 maybe_ack(_Ch, _, DTag) ->
     DTag.
 
-arguments(Priorities) ->
-    [{<<"x-priorities">>, array, [{byte, P} || P <- Priorities]}].
+arguments(none) -> [];
+arguments(Max)  -> [{<<"x-max-priority">>, byte, Max}].
 
 priority2bin(undefined) -> <<"undefined">>;
 priority2bin(Int)       -> list_to_binary(integer_to_list(Int)).

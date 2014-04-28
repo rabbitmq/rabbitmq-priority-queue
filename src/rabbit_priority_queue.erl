@@ -103,14 +103,12 @@ collapse_recovery(QNames, DupNames, Recovery) ->
 
 priorities(#amqqueue{arguments = Args}) ->
     Ints = [long, short, signedint, byte],
-    case rabbit_misc:table_lookup(Args, <<"x-priorities">>) of
-        {array, Array} -> case lists:reverse(
-                                 lists:usort([N || {T, N} <- Array,
-                                                   lists:member(T, Ints)])) of
-                              [] -> none;
-                              Ps -> Ps
-                          end;
-        _              -> none
+    case rabbit_misc:table_lookup(Args, <<"x-max-priority">>) of
+        {Type, Max} -> case lists:member(Type, Ints) of
+                           false -> none;
+                           true  -> lists:reverse(lists:seq(0, Max))
+                       end;
+        _           -> none
     end.
 
 %%----------------------------------------------------------------------------

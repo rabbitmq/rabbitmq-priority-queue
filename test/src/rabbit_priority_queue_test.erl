@@ -185,6 +185,26 @@ purge_test() ->
     amqp_connection:close(Conn),
     passed.
 
+mirror_queue_sync_test() ->
+    {Conn, Ch} = open(),
+    start_second_node(),
+    Q = <<"test">>,
+    declare(Ch, Q, [1, 2, 3]),
+    publish(Ch, Q, [1, 2, 3]),
+    ok = rabbit_policy:set(
+           <<"/">>, <<"HA">>, <<".*">>, [{<<"ha-mode">>, <<"all">>}], 0,
+           <<"queues">>),
+    publish(Ch, Q, [1, 2, 3, 1, 2, 3]),
+    %% master now has 9, slave 6.
+    get_partial(Ch, Q, manual_ack, [3, 3, 3, 2, 2, 2]),
+    %% So some but not all are unacked at the slave
+    Res = rabbit_misc:r(<<"/">>, queue, Q),
+    rabbit_control_main:sync_queue(Res),
+    wait_for_sync(Res),
+    stop_second_node(),
+    amqp_connection:close(Conn),
+    passed.
+
 %%----------------------------------------------------------------------------
 open() ->
     {ok, Conn} = amqp_connection:start(#amqp_params_network{}),
@@ -238,9 +258,12 @@ assert_delivered(Ch, Ack, P) ->
     end.
 
 get_all(Ch, Q, Ack, Ps) ->
-    DTags = [get_ok(Ch, Q, true, P) || P <- Ps],
+    DTags = get_partial(Ch, Q, Ack, Ps),
     get_empty(Ch, Q),
     DTags.
+
+get_partial(Ch, Q, Ack, Ps) ->
+    [get_ok(Ch, Q, Ack, P) || P <- Ps].
 
 get_empty(Ch, Q) ->
     #'basic.get_empty'{} = amqp_channel:call(Ch, #'basic.get'{queue = Q}).
@@ -264,3 +287,49 @@ arguments(Priorities) ->
 
 priority2bin(undefined) -> <<"undefined">>;
 priority2bin(Int)       -> list_to_binary(integer_to_list(Int)).
+
+%%----------------------------------------------------------------------------
+
+start_second_node() -> start_other_node(hare, 5673),
+                       cluster_other_node(hare).
+stop_second_node()  -> stop_other_node(hare).
+
+start_other_node(Name, Port) ->
+    %% ?assertCmd seems to hang if you background anything. Bah!
+    Res = os:cmd("make -C " ++ plugin_dir() ++ " OTHER_NODE=" ++
+                     atom_to_list(Name) ++
+                     " OTHER_PORT=" ++ integer_to_list(Port) ++
+                     " start-other-node ; echo $?"),
+    LastLine = hd(lists:reverse(string:tokens(Res, "\n"))),
+    case LastLine of
+        "0" -> ok;
+        _   -> ?debugVal(Res),
+               ?assertEqual("0", LastLine)
+    end.
+
+cluster_other_node(Name) ->
+    ?assertCmd("make -C " ++ plugin_dir() ++ " OTHER_NODE=" ++
+                   atom_to_list(Name) ++ " cluster-other-node").
+
+stop_other_node(Name) ->
+    ?assertCmd("make -C " ++ plugin_dir() ++ " OTHER_NODE=" ++
+                   atom_to_list(Name) ++ " stop-other-node").
+
+plugin_dir() ->
+    {ok, [[File]]} = init:get_argument(config),
+    filename:dirname(filename:dirname(File)).
+
+wait_for_sync(Q) ->
+    case synced(Q) of
+        true  -> ok;
+        false -> timer:sleep(100),
+                 wait_for_sync(Q)
+    end.
+
+synced(Q) ->
+    Info = rabbit_amqqueue:info_all(<<"/">>, [name, synchronised_slave_pids]),
+    [SSPids] = [Pids || [{name, Q1}, {synchronised_slave_pids, Pids}] <- Info,
+                        Q =:= Q1],
+    length(SSPids) =:= 1.
+
+%%----------------------------------------------------------------------------

@@ -339,6 +339,9 @@ status(#state{bq = BQ, bqss = BQSs}) ->
 status(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:status(BQS).
 
+%% TODO this head is a workaround for bug 25590
+invoke(?MODULE, Fun, State = #state{bq = BQ}) ->
+    foreach1(fun (_P, BQSN) -> BQ:invoke(BQ, Fun, BQSN) end, State);
 invoke(Mod, {P, Fun}, State = #state{bq = BQ}) ->
     pick1(fun (_P, BQSN) -> BQ:invoke(Mod, Fun, BQSN) end, P, State);
 invoke(Mod, Fun, State = #passthrough{bq = BQ, bqs = BQS}) ->

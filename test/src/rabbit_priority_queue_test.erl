@@ -92,6 +92,18 @@ matching_test() ->
     amqp_connection:close(Conn),
     passed.
 
+resume_test() ->
+    {Conn, Ch} = open(),
+    Q = <<"test">>,
+    declare(Ch, Q, 5),
+    amqp_channel:call(Ch, #'confirm.select'{}),
+    publish_many(Ch, Q, 10000),
+    amqp_channel:wait_for_confirms(Ch),
+    amqp_channel:call(Ch, #'queue.purge'{queue = Q}), %% Assert it exists
+    delete(Ch, Q),
+    amqp_connection:close(Conn),
+    passed.
+
 straight_through_test() ->
     {Conn, Ch} = open(),
     Q = <<"test">>,
@@ -224,6 +236,10 @@ publish(Ch, Q, Ps) ->
     amqp_channel:call(Ch, #'confirm.select'{}),
     [publish1(Ch, Q, P) || P <- Ps],
     amqp_channel:wait_for_confirms(Ch).
+
+publish_many(_Ch, _Q, 0) -> ok;
+publish_many( Ch,  Q, N) -> publish1(Ch, Q, random:uniform(5)),
+                            publish_many(Ch, Q, N - 1).
 
 publish1(Ch, Q, P) ->
     amqp_channel:cast(Ch, #'basic.publish'{routing_key = Q},

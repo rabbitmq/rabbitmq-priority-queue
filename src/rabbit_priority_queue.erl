@@ -332,8 +332,9 @@ msg_rates(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:msg_rates(BQS).
 
 status(#state{bq = BQ, bqss = BQSs}) ->
-    [[{priority, P},
-      {status,   BQ:status(BQSN)}] || {P, BQSN} <- BQSs];
+    fold0(fun (_P, BQSN, Acc) ->
+                  combine_status(BQ:status(BQSN), Acc)
+          end, nothing, BQSs);
 status(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:status(BQS).
 
@@ -512,3 +513,14 @@ priority_on_acktags(P, AckTags) ->
          _ when is_integer(Tag) -> {P, Tag};
          _                      -> Tag
      end || Tag <- AckTags].
+
+combine_status(New, nothing) ->
+    New;
+combine_status(New, Old) ->
+    [{K, cse(V, proplists:get_value(K, Old))} || {K, V} <- New].
+
+cse(infinity, _)            -> infinity;
+cse(_, infinity)            -> infinity;
+cse(A, B) when is_number(A) -> A + B;
+cse({delta, _, _, _}, _)    -> {delta, todo, todo, todo};
+cse(A, B)                   -> exit({A, B}).

@@ -4,7 +4,8 @@ This plugin adds support for priority queues to RabbitMQ.
 
 # Downloading
 
-For the time being there aren't any binaries, it's not yet trustworthy enough.
+You can download a pre-built binary of this plugin from
+http://www.rabbitmq.com/community-plugins.html.
 
 # Building
 

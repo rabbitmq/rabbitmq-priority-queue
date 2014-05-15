@@ -199,6 +199,19 @@ purge_test() ->
     amqp_connection:close(Conn),
     passed.
 
+ram_duration_test() ->
+    QName = rabbit_misc:r(<<"/">>, queue, <<"pseudo">>),
+    Q0 = rabbit_amqqueue:pseudo_queue(QName, self()),
+    Q = Q0#amqqueue{arguments = [{<<"x-max-priority">>, long, 5}]},
+    PQ = rabbit_priority_queue,
+    BQS1 = PQ:init(Q, new, fun(_, _) -> ok end),
+    {Duration1, BQS2} = PQ:ram_duration(BQS1),
+    BQS3 = PQ:set_ram_duration_target(infinity, BQS2),
+    BQS4 = PQ:set_ram_duration_target(1, BQS3),
+    {Duration2, BQS5} = PQ:ram_duration(BQS4),
+    PQ:delete_and_terminate(a_whim, BQS5),
+    passed.
+
 mirror_queue_sync_with() -> cluster_ab.
 mirror_queue_sync([CfgA, _CfgB]) ->
     Ch = pget(channel, CfgA),

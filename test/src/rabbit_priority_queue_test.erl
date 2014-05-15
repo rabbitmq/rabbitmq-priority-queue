@@ -16,8 +16,11 @@
 
 -module(rabbit_priority_queue_test).
 
+-compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("amqp_client/include/amqp_client.hrl").
+
+-import(rabbit_misc, [pget/2]).
 
 %% The BQ API is used in all sorts of places in all sorts of
 %% ways. Therefore we have to jump through a few different hoops
@@ -196,27 +199,24 @@ purge_test() ->
     amqp_connection:close(Conn),
     passed.
 
-mirror_queue_sync_test() ->
-    {Conn, Ch} = open(),
-    start_second_node(),
+mirror_queue_sync_with() -> cluster_ab.
+mirror_queue_sync([CfgA, _CfgB]) ->
+    Ch = pget(channel, CfgA),
     Q = <<"test">>,
     declare(Ch, Q, 3),
     publish(Ch, Q, [1, 2, 3]),
-    ok = rabbit_policy:set(
-           <<"/">>, <<"HA">>, <<".*">>, [{<<"ha-mode">>, <<"all">>}], 0,
-           <<"queues">>),
+    ok = rabbit_test_util:set_ha_policy(CfgA, <<".*">>, <<"all">>),
     publish(Ch, Q, [1, 2, 3, 1, 2, 3]),
     %% master now has 9, slave 6.
     get_partial(Ch, Q, manual_ack, [3, 3, 3, 2, 2, 2]),
     %% So some but not all are unacked at the slave
-    Res = rabbit_misc:r(<<"/">>, queue, Q),
-    rabbit_control_main:sync_queue(Res),
-    wait_for_sync(Res),
-    stop_second_node(),
-    amqp_connection:close(Conn),
+    rabbit_test_util:control_action(sync_queue, CfgA, [binary_to_list(Q)],
+                                    [{"-p", "/"}]),
+    wait_for_sync(CfgA, rabbit_misc:r(<<"/">>, queue, Q)),
     passed.
 
 %%----------------------------------------------------------------------------
+
 open() ->
     {ok, Conn} = amqp_connection:start(#amqp_params_network{}),
     {ok, Ch} = amqp_connection:open_channel(Conn),
@@ -304,44 +304,17 @@ priority2bin(Int)       -> list_to_binary(integer_to_list(Int)).
 
 %%----------------------------------------------------------------------------
 
-start_second_node() -> start_other_node(hare, 5673),
-                       cluster_other_node(hare).
-stop_second_node()  -> stop_other_node(hare).
-
-start_other_node(Name, Port) ->
-    %% ?assertCmd seems to hang if you background anything. Bah!
-    Res = os:cmd("make -C " ++ plugin_dir() ++ " OTHER_NODE=" ++
-                     atom_to_list(Name) ++
-                     " OTHER_PORT=" ++ integer_to_list(Port) ++
-                     " start-other-node ; echo $?"),
-    LastLine = hd(lists:reverse(string:tokens(Res, "\n"))),
-    case LastLine of
-        "0" -> ok;
-        _   -> ?debugVal(Res),
-               ?assertEqual("0", LastLine)
-    end.
-
-cluster_other_node(Name) ->
-    ?assertCmd("make -C " ++ plugin_dir() ++ " OTHER_NODE=" ++
-                   atom_to_list(Name) ++ " cluster-other-node").
-
-stop_other_node(Name) ->
-    ?assertCmd("make -C " ++ plugin_dir() ++ " OTHER_NODE=" ++
-                   atom_to_list(Name) ++ " stop-other-node").
-
-plugin_dir() ->
-    {ok, [[File]]} = init:get_argument(config),
-    filename:dirname(filename:dirname(File)).
-
-wait_for_sync(Q) ->
-    case synced(Q) of
+wait_for_sync(Cfg, Q) ->
+    case synced(Cfg, Q) of
         true  -> ok;
         false -> timer:sleep(100),
-                 wait_for_sync(Q)
+                 wait_for_sync(Cfg, Q)
     end.
 
-synced(Q) ->
-    Info = rabbit_amqqueue:info_all(<<"/">>, [name, synchronised_slave_pids]),
+synced(Cfg, Q) ->
+    Info = rpc:call(pget(node, Cfg),
+                    rabbit_amqqueue, info_all,
+                    [<<"/">>, [name, synchronised_slave_pids]]),
     [SSPids] = [Pids || [{name, Q1}, {synchronised_slave_pids, Pids}] <- Info,
                         Q =:= Q1],
     length(SSPids) =:= 1.

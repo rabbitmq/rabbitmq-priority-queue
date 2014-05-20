@@ -52,7 +52,9 @@ enable() ->
     {ok, RealBQ} = application:get_env(rabbit, backing_queue_module),
     case RealBQ of
         ?MODULE -> ok;
-        _       -> application:set_env(
+        _       -> rabbit_log:info("Priority queues enabled, real BQ is ~s~n",
+                                   [RealBQ]),
+                   application:set_env(
                      rabbitmq_priority_queue, backing_queue_module, RealBQ),
                    application:set_env(rabbit, backing_queue_module, ?MODULE)
     end.
@@ -332,8 +334,8 @@ msg_rates(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:msg_rates(BQS).
 
 status(#state{bq = BQ, bqss = BQSs}) ->
-    fold0(fun (_P, BQSN, Acc) ->
-                  combine_status(BQ:status(BQSN), Acc)
+    fold0(fun (P, BQSN, Acc) ->
+                  combine_status(P, BQ:status(BQSN), Acc)
           end, nothing, BQSs);
 status(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:status(BQS).
@@ -514,10 +516,16 @@ priority_on_acktags(P, AckTags) ->
          _                      -> Tag
      end || Tag <- AckTags].
 
-combine_status(New, nothing) ->
-    New;
-combine_status(New, Old) ->
-    [{K, cse(V, proplists:get_value(K, Old))} || {K, V} <- New].
+combine_status(P, New, nothing) ->
+    [{priorities, [{P, simplify_status(New)}]} | New];
+combine_status(P, New, Old) ->
+    Combined = [{K, cse(V, proplists:get_value(K, Old))} || {K, V} <- New],
+    Ps = [{P, simplify_status(New)} | proplists:get_value(priorities, Old)],
+    [{priorities, Ps} | Combined].
+
+simplify_status(Status) ->
+    [{K, V} || {K, V} <- Status,
+               lists:member(K, [len, persistent_count, ram_msg_count])].
 
 cse(infinity, _)            -> infinity;
 cse(_, infinity)            -> infinity;

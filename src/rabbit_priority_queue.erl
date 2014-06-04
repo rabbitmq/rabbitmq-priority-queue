@@ -52,7 +52,9 @@ enable() ->
     {ok, RealBQ} = application:get_env(rabbit, backing_queue_module),
     case RealBQ of
         ?MODULE -> ok;
-        _       -> application:set_env(
+        _       -> rabbit_log:info("Priority queues enabled, real BQ is ~s~n",
+                                   [RealBQ]),
+                   application:set_env(
                      rabbitmq_priority_queue, backing_queue_module, RealBQ),
                    application:set_env(rabbit, backing_queue_module, ?MODULE)
     end.
@@ -116,8 +118,9 @@ priorities(#amqqueue{arguments = Args}) ->
 init(Q, Recover, AsyncCallback) ->
     BQ = bq(),
     case priorities(Q) of
-        none -> #passthrough{bq  = BQ,
-                             bqs = BQ:init(Q, Recover, AsyncCallback)};
+        none -> [RealRecover] = Recover, %% [0]
+                #passthrough{bq  = BQ,
+                             bqs = BQ:init(Q, RealRecover, AsyncCallback)};
         Ps   -> Init = fun (P, Term) ->
                                BQ:init(
                                  mutate_name(P, Q), Term,
@@ -131,6 +134,10 @@ init(Q, Recover, AsyncCallback) ->
                 #state{bq   = BQ,
                        bqss = BQSs}
     end.
+%% [0] collapse_recovery has the effect of making a list of recovery
+%% terms in priority order, even for non priority queues. It's easier
+%% to do that and "unwrap" in init/3 than to have collapse_recovery be
+%% aware of non-priority queues.
 
 terminate(Reason, State = #state{bq = BQ}) ->
     foreach1(fun (_P, BQSN) -> BQ:terminate(Reason, BQSN) end, State);
@@ -332,8 +339,8 @@ msg_rates(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:msg_rates(BQS).
 
 status(#state{bq = BQ, bqss = BQSs}) ->
-    fold0(fun (_P, BQSN, Acc) ->
-                  combine_status(BQ:status(BQSN), Acc)
+    fold0(fun (P, BQSN, Acc) ->
+                  combine_status(P, BQ:status(BQSN), Acc)
           end, nothing, BQSs);
 status(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:status(BQS).
@@ -511,10 +518,16 @@ priority_on_acktags(P, AckTags) ->
          _                      -> Tag
      end || Tag <- AckTags].
 
-combine_status(New, nothing) ->
-    New;
-combine_status(New, Old) ->
-    [{K, cse(V, proplists:get_value(K, Old))} || {K, V} <- New].
+combine_status(P, New, nothing) ->
+    [{priorities, [{P, simplify_status(New)}]} | New];
+combine_status(P, New, Old) ->
+    Combined = [{K, cse(V, proplists:get_value(K, Old))} || {K, V} <- New],
+    Ps = [{P, simplify_status(New)} | proplists:get_value(priorities, Old)],
+    [{priorities, Ps} | Combined].
+
+simplify_status(Status) ->
+    [{K, V} || {K, V} <- Status,
+               lists:member(K, [len, persistent_count, ram_msg_count])].
 
 cse(infinity, _)            -> infinity;
 cse(_, infinity)            -> infinity;

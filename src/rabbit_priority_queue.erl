@@ -118,7 +118,10 @@ priorities(#amqqueue{arguments = Args}) ->
 init(Q, Recover, AsyncCallback) ->
     BQ = bq(),
     case priorities(Q) of
-        none -> [RealRecover] = Recover, %% [0]
+        none -> RealRecover = case Recover of
+                                  new -> new;
+                                  [R] -> R %% [0]
+                              end,
                 #passthrough{bq  = BQ,
                              bqs = BQ:init(Q, RealRecover, AsyncCallback)};
         Ps   -> Init = fun (P, Term) ->

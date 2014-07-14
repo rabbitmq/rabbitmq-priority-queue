@@ -80,6 +80,23 @@ Messages without a priority property are treated as if their priority were
 0. Messages with a priority which is higher than the queue's
 maximum are treated as if they were published with the maximum priority.
 
+## Interaction with consumers
+
+It's important to understand how consumers work when working with
+priority queues. By default, consumers may be sent a large number of
+messages before they acknowledge any, limited only by network
+backpressure.
+
+So if such a hungry consumer connects to an empty queue to which
+messages are subsequently published, the messages may not spend any
+time at all waiting in the queue. In this case the priority queue will
+not get any opportunity to prioritise them.
+
+In most cases you will want to use the `basic.qos` method in manual
+acknowledgement mode on your consumers, to limit the number of
+messages that can be out for delivery at any time and thus allow
+messages to be prioritised.
+
 ## Interaction with other features
 
 In general priority queues have all the features of standard RabbitMQ

@@ -30,7 +30,8 @@
 
 -export([start/1, stop/0]).
 
--export([init/3, terminate/2, delete_and_terminate/2, purge/1, purge_acks/1,
+-export([init/3, terminate/2, delete_and_terminate/2, delete_crashed/1,
+         purge/1, purge_acks/1,
          publish/5, publish_delivered/4, discard/3, drain_confirmed/1,
          dropwhile/2, fetchwhile/4, fetch/2, drop/2, ack/2, requeue/2,
          ackfold/4, fold/3, len/1, is_empty/1, depth/1,
@@ -157,6 +158,13 @@ delete_and_terminate(Reason, State = #state{bq = BQ}) ->
              end, State);
 delete_and_terminate(Reason, State = #passthrough{bq = BQ, bqs = BQS}) ->
     ?passthrough1(delete_and_terminate(Reason, BQS)).
+
+delete_crashed(Q = #amqqueue{name = QName}) ->
+    BQ = bq(),
+    case priorities(Q) of
+        none -> BQ:delete_crashed(Q);
+        Ps   -> [BQ:delete_crashed(mutate_name(P, Q)) || P <- Ps]
+    end.
 
 purge(State = #state{bq = BQ}) ->
     fold_add2(fun (_P, BQSN) -> BQ:purge(BQSN) end, State);

@@ -119,8 +119,8 @@ init(Q, Recover, AsyncCallback) ->
     BQ = bq(),
     case priorities(Q) of
         none -> RealRecover = case Recover of
-                                  new -> new;
-                                  [R] -> R %% [0]
+                                  [R] -> R; %% [0]
+                                  R   -> R
                               end,
                 #passthrough{bq  = BQ,
                              bqs = BQ:init(Q, RealRecover, AsyncCallback)};
@@ -129,10 +129,10 @@ init(Q, Recover, AsyncCallback) ->
                                  mutate_name(P, Q), Term,
                                  fun (M, F) -> AsyncCallback(M, {P, F}) end)
                        end,
-                BQSs = case Recover of
-                           new -> [{P, Init(P, new)} || P <- Ps];
-                           _   -> PsTerms = lists:zip(Ps, Recover),
-                                  [{P, Init(P, Term)} || {P, Term} <- PsTerms]
+                BQSs = case have_recovery_terms(Recover) of
+                           false -> [{P, Init(P, Recover)} || P <- Ps];
+                           _     -> PsTerms = lists:zip(Ps, Recover),
+                                    [{P, Init(P, Term)} || {P, Term} <- PsTerms]
                        end,
                 #state{bq   = BQ,
                        bqss = BQSs}
@@ -141,6 +141,10 @@ init(Q, Recover, AsyncCallback) ->
 %% terms in priority order, even for non priority queues. It's easier
 %% to do that and "unwrap" in init/3 than to have collapse_recovery be
 %% aware of non-priority queues.
+
+have_recovery_terms(new)                -> false;
+have_recovery_terms(non_clean_shutdown) -> false;
+have_recovery_terms(_)                  -> true.
 
 terminate(Reason, State = #state{bq = BQ}) ->
     foreach1(fun (_P, BQSN) -> BQ:terminate(Reason, BQSN) end, State);

@@ -36,7 +36,7 @@
          ackfold/4, fold/3, len/1, is_empty/1, depth/1,
          set_ram_duration_target/2, ram_duration/1, needs_timeout/1, timeout/1,
          handle_pre_hibernate/1, resume/1, msg_rates/1,
-         status/1, invoke/3, is_duplicate/2]).
+         info/2, invoke/3, is_duplicate/2]).
 
 -record(state, {bq, bqss}).
 -record(passthrough, {bq, bqs}).
@@ -341,12 +341,16 @@ msg_rates(#state{bq = BQ, bqss = BQSs}) ->
 msg_rates(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:msg_rates(BQS).
 
-status(#state{bq = BQ, bqss = BQSs}) ->
+info(backing_queue_status, #state{bq = BQ, bqss = BQSs}) ->
     fold0(fun (P, BQSN, Acc) ->
-                  combine_status(P, BQ:status(BQSN), Acc)
+                  combine_status(P, BQ:info(backing_queue_status, BQSN), Acc)
           end, nothing, BQSs);
-status(#passthrough{bq = BQ, bqs = BQS}) ->
-    BQ:status(BQS).
+info(Item, #state{bq = BQ, bqss = BQSs}) ->
+    fold0(fun (_P, BQSN, Acc) ->
+                  Acc + BQ:info(Item, BQSN)
+          end, 0, BQSs);
+info(Item, #passthrough{bq = BQ, bqs = BQS}) ->
+    BQ:info(Item, BQS).
 
 invoke(Mod, {P, Fun}, State = #state{bq = BQ}) ->
     pick1(fun (_P, BQSN) -> BQ:invoke(Mod, Fun, BQSN) end, P, State);
@@ -522,15 +526,12 @@ priority_on_acktags(P, AckTags) ->
      end || Tag <- AckTags].
 
 combine_status(P, New, nothing) ->
-    [{priorities, [{P, simplify_status(New)}]} | New];
+    [{priority_lengths, [{P, proplists:get_value(len, New)}]} | New];
 combine_status(P, New, Old) ->
     Combined = [{K, cse(V, proplists:get_value(K, Old))} || {K, V} <- New],
-    Ps = [{P, simplify_status(New)} | proplists:get_value(priorities, Old)],
-    [{priorities, Ps} | Combined].
-
-simplify_status(Status) ->
-    [{K, V} || {K, V} <- Status,
-               lists:member(K, [len, persistent_count, ram_msg_count])].
+    Lens = [{P, proplists:get_value(len, New)} |
+            proplists:get_value(priority_lengths, Old)],
+    [{priority_lengths, Lens} | Combined].
 
 cse(infinity, _)            -> infinity;
 cse(_, infinity)            -> infinity;

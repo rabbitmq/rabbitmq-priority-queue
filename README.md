@@ -36,9 +36,11 @@ queues, it does not support converting between a priority queue and a
 standard queue, and the on-disc format is somewhat different. This has
 the following implications:
 
-* _It is dangerous to disable the plugin when durable priority queues exist_;
-  the broker will fail to start again. Remember that on broker upgrade
-  non-bundled plugins like this one need to be reinstalled.
+* _It is dangerous to disable the plugin when durable priority queues
+  exist_; such queues will crash if the plugin is disabled while the
+  broker is running, and the broker will fail to start again if
+  stopped. Remember that on broker upgrade non-bundled plugins like
+  this one need to be reinstalled.
 * It is similarly dangerous to enable the plugin if you have declared
   durable queues with an `x-max-priority` argument without it. I have no
   idea why you'd do that, since you wouldn't get priority queues, but

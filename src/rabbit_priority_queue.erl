@@ -28,3 +28,89 @@ start(_DurableQueues) ->
 stop() ->
     ok.
 
+init(Queue, Recover, AsyncCallback) ->
+    State.
+
+
+terminate(_Reason, State) ->
+    .
+
+delete_and_terminate(_Reason, State) ->
+    .
+
+purge(State) ->
+    .
+
+purge_acks(State) ->
+    .
+
+publish(Msg, MsgProps, IsDelivered, _ChPid, State) ->
+    .
+
+publish_delivered(Msg, MsgProps, _ChPid, State) ->
+    {[], State}.
+
+discard(_MsgId, _ChPid, State) ->
+    State.
+
+drain_confirmed(State) ->
+    {[], State}.
+
+dropwhile(Pred, State) ->
+    {undefined, State}.
+
+fetchwhile(Pred, Fun, Acc, State) ->
+    .
+
+fetch(AckRequired, State) ->
+    .
+
+drop(AckRequired, State) ->
+    .
+
+ack(AckTags, State) ->
+    .
+
+requeue(AckTags, State) ->
+    .
+
+ackfold(MsgFun, Acc, State, AckTags) ->
+    .
+
+fold(Fun, Acc, State) ->
+    .
+
+len(State) ->
+    .
+
+is_empty(State) ->
+    .
+
+depth(State) ->
+    .
+
+set_ram_duration_target(Duration, State) ->
+    .
+
+ram_duration(State) ->
+    .
+
+needs_timeout(State) ->
+    .
+
+timeout(State) ->
+    .
+
+handle_pre_hibernate(State) ->
+    State.
+
+msg_rates(State) ->
+    {0.0, 0.0}.
+
+status(State) ->
+    {ok, {}}.
+
+invoke(?MODULE, Fun, State) -> Fun(?MODULE, State);
+invoke(      _,   _, State) -> State.
+
+is_duplicate(_Msg, State) -> {false, State}.

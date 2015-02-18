@@ -1,3 +1,6 @@
+**Repository [moved to GitHub](https://github.com/rabbitmq/rabbitmq-priority-queue)**.
+This is a stale read-only repository.
+
 # Nothing to see here
 
 As of RabbitMQ 3.5.0 the priority queue will be integrated into the

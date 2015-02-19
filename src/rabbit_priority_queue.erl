@@ -30,13 +30,14 @@
 
 -export([start/1, stop/0]).
 
--export([init/3, terminate/2, delete_and_terminate/2, purge/1, purge_acks/1,
+-export([init/3, terminate/2, delete_and_terminate/2, delete_crashed/1,
+         purge/1, purge_acks/1,
          publish/5, publish_delivered/4, discard/3, drain_confirmed/1,
          dropwhile/2, fetchwhile/4, fetch/2, drop/2, ack/2, requeue/2,
          ackfold/4, fold/3, len/1, is_empty/1, depth/1,
          set_ram_duration_target/2, ram_duration/1, needs_timeout/1, timeout/1,
          handle_pre_hibernate/1, resume/1, msg_rates/1,
-         status/1, invoke/3, is_duplicate/2]).
+         info/2, invoke/3, is_duplicate/2]).
 
 -record(state, {bq, bqss}).
 -record(passthrough, {bq, bqs}).
@@ -119,8 +120,8 @@ init(Q, Recover, AsyncCallback) ->
     BQ = bq(),
     case priorities(Q) of
         none -> RealRecover = case Recover of
-                                  new -> new;
-                                  [R] -> R %% [0]
+                                  [R] -> R; %% [0]
+                                  R   -> R
                               end,
                 #passthrough{bq  = BQ,
                              bqs = BQ:init(Q, RealRecover, AsyncCallback)};
@@ -129,10 +130,10 @@ init(Q, Recover, AsyncCallback) ->
                                  mutate_name(P, Q), Term,
                                  fun (M, F) -> AsyncCallback(M, {P, F}) end)
                        end,
-                BQSs = case Recover of
-                           new -> [{P, Init(P, new)} || P <- Ps];
-                           _   -> PsTerms = lists:zip(Ps, Recover),
-                                  [{P, Init(P, Term)} || {P, Term} <- PsTerms]
+                BQSs = case have_recovery_terms(Recover) of
+                           false -> [{P, Init(P, Recover)} || P <- Ps];
+                           _     -> PsTerms = lists:zip(Ps, Recover),
+                                    [{P, Init(P, Term)} || {P, Term} <- PsTerms]
                        end,
                 #state{bq   = BQ,
                        bqss = BQSs}
@@ -141,6 +142,10 @@ init(Q, Recover, AsyncCallback) ->
 %% terms in priority order, even for non priority queues. It's easier
 %% to do that and "unwrap" in init/3 than to have collapse_recovery be
 %% aware of non-priority queues.
+
+have_recovery_terms(new)                -> false;
+have_recovery_terms(non_clean_shutdown) -> false;
+have_recovery_terms(_)                  -> true.
 
 terminate(Reason, State = #state{bq = BQ}) ->
     foreach1(fun (_P, BQSN) -> BQ:terminate(Reason, BQSN) end, State);
@@ -153,6 +158,13 @@ delete_and_terminate(Reason, State = #state{bq = BQ}) ->
              end, State);
 delete_and_terminate(Reason, State = #passthrough{bq = BQ, bqs = BQS}) ->
     ?passthrough1(delete_and_terminate(Reason, BQS)).
+
+delete_crashed(Q = #amqqueue{name = QName}) ->
+    BQ = bq(),
+    case priorities(Q) of
+        none -> BQ:delete_crashed(Q);
+        Ps   -> [BQ:delete_crashed(mutate_name(P, Q)) || P <- Ps]
+    end.
 
 purge(State = #state{bq = BQ}) ->
     fold_add2(fun (_P, BQSN) -> BQ:purge(BQSN) end, State);
@@ -341,16 +353,17 @@ msg_rates(#state{bq = BQ, bqss = BQSs}) ->
 msg_rates(#passthrough{bq = BQ, bqs = BQS}) ->
     BQ:msg_rates(BQS).
 
-status(#state{bq = BQ, bqss = BQSs}) ->
+info(backing_queue_status, #state{bq = BQ, bqss = BQSs}) ->
     fold0(fun (P, BQSN, Acc) ->
-                  combine_status(P, BQ:status(BQSN), Acc)
+                  combine_status(P, BQ:info(backing_queue_status, BQSN), Acc)
           end, nothing, BQSs);
-status(#passthrough{bq = BQ, bqs = BQS}) ->
-    BQ:status(BQS).
+info(Item, #state{bq = BQ, bqss = BQSs}) ->
+    fold0(fun (_P, BQSN, Acc) ->
+                  Acc + BQ:info(Item, BQSN)
+          end, 0, BQSs);
+info(Item, #passthrough{bq = BQ, bqs = BQS}) ->
+    BQ:info(Item, BQS).
 
-%% TODO this head is a workaround for bug 25590
-invoke(?MODULE, Fun, State = #state{bq = BQ}) ->
-    foreach1(fun (_P, BQSN) -> BQ:invoke(BQ, Fun, BQSN) end, State);
 invoke(Mod, {P, Fun}, State = #state{bq = BQ}) ->
     pick1(fun (_P, BQSN) -> BQ:invoke(Mod, Fun, BQSN) end, P, State);
 invoke(Mod, Fun, State = #passthrough{bq = BQ, bqs = BQS}) ->
@@ -525,15 +538,12 @@ priority_on_acktags(P, AckTags) ->
      end || Tag <- AckTags].
 
 combine_status(P, New, nothing) ->
-    [{priorities, [{P, simplify_status(New)}]} | New];
+    [{priority_lengths, [{P, proplists:get_value(len, New)}]} | New];
 combine_status(P, New, Old) ->
     Combined = [{K, cse(V, proplists:get_value(K, Old))} || {K, V} <- New],
-    Ps = [{P, simplify_status(New)} | proplists:get_value(priorities, Old)],
-    [{priorities, Ps} | Combined].
-
-simplify_status(Status) ->
-    [{K, V} || {K, V} <- Status,
-               lists:member(K, [len, persistent_count, ram_msg_count])].
+    Lens = [{P, proplists:get_value(len, New)} |
+            proplists:get_value(priority_lengths, Old)],
+    [{priority_lengths, Lens} | Combined].
 
 cse(infinity, _)            -> infinity;
 cse(_, infinity)            -> infinity;

@@ -36,9 +36,11 @@ queues, it does not support converting between a priority queue and a
 standard queue, and the on-disc format is somewhat different. This has
 the following implications:
 
-* _It is dangerous to disable the plugin when durable priority queues exist_;
-  the broker will fail to start again. Remember that on broker upgrade
-  non-bundled plugins like this one need to be reinstalled.
+* _It is dangerous to disable the plugin when durable priority queues
+  exist_; such queues will crash if the plugin is disabled while the
+  broker is running, and the broker will fail to start again if
+  stopped. Remember that on broker upgrade non-bundled plugins like
+  this one need to be reinstalled.
 * It is similarly dangerous to enable the plugin if you have declared
   durable queues with an `x-max-priority` argument without it. I have no
   idea why you'd do that, since you wouldn't get priority queues, but
@@ -79,6 +81,23 @@ you can specify as many priority levels as you like. Note that:
 Messages without a priority property are treated as if their priority were
 0. Messages with a priority which is higher than the queue's
 maximum are treated as if they were published with the maximum priority.
+
+## Interaction with consumers
+
+It's important to understand how consumers work when working with
+priority queues. By default, consumers may be sent a large number of
+messages before they acknowledge any, limited only by network
+backpressure.
+
+So if such a hungry consumer connects to an empty queue to which
+messages are subsequently published, the messages may not spend any
+time at all waiting in the queue. In this case the priority queue will
+not get any opportunity to prioritise them.
+
+In most cases you will want to use the `basic.qos` method in manual
+acknowledgement mode on your consumers, to limit the number of
+messages that can be out for delivery at any time and thus allow
+messages to be prioritised.
 
 ## Interaction with other features
 

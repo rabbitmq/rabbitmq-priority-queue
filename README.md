@@ -14,7 +14,7 @@ Users of the plugin upgrading from previous versions of RabbitMQ should:
 For users of RabbitMQ 3.4.x, you can read the old version
 of the README at:
 
-https://github.com/rabbitmq/rabbitmq-priority-queue/tree/3431dc1ef8ea53e9a556c6be8bc1b417ac03b58d
+https://github.com/rabbitmq/rabbitmq-priority-queue/tree/fbdcb67af2d190d3974a8133096be2f3f576ee62
 
 and download the plugin from:
 

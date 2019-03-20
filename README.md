@@ -18,5 +18,5 @@ https://github.com/rabbitmq/rabbitmq-priority-queue/tree/fbdcb67af2d190d3974a813
 
 and download the plugin from:
 
-http://www.rabbitmq.com/community-plugins/
+https://www.rabbitmq.com/community-plugins/
 
